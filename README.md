@@ -76,6 +76,14 @@ llm-codebuddy:
 
 > 本账号实测可用的模型：`deepseek-v4-pro`、`deepseek-v4-flash`、`auto`。
 
+## 推理能力（reasoning）
+
+CodeBuddy 模型原生返回 `reasoning_content`，适配器为每个模型声明了 `off / low / high / max` 四档推理努力（默认 `high`），并把请求里的 `reasoningEffort` 透传为 `reasoning_effort`。dsh 的 agent 循环默认会带一个 `reasoningEffort`，因此模型**必须**声明 reasoning 能力，否则调用会被 harness 以 `UNSUPPORTED_REASONING_EFFORT` 拒绝（表现为"模型可见但无法使用"）。
+
+## 工具调用（tool_calls）
+
+CodeBuddy 后端的工具调用流式返回有一个特点：真实工具名只在**第一个** tool-call delta 里给出，随后的参数分片里 `function.name` 是**空字符串 `""`**（而非省略）。适配器的 SSE 翻译因此只在该字段**非空**时覆盖工具名，避免把有效名称被空串覆盖 —— 否则 dsh 会报 `unknown tool ""` 且无法路由到真实工具。
+
 ## 边界
 
 - **未登录 CodeBuddy**：找不到 auth 文件时模型仍会显示，但请求失败并给出 `MISSING_CREDENTIAL` 提示。

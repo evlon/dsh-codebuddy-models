@@ -51,6 +51,33 @@ test('translate assembles tool-call argument fragments across deltas', async () 
   assert.equal(finish.reason.kind, 'tool-calls')
 })
 
+test('translate keeps the tool name when later deltas send empty-string names', async () => {
+  // CodeBuddy emits the real name on the first tool-call delta, then sends
+  // `function.name: ""` on every streaming argument fragment. The name must
+  // not be overwritten with an empty string.
+  const fullArgs = JSON.stringify({ path: 'a.txt' })
+  const frag1 = fullArgs.slice(0, 8)
+  const frag2 = fullArgs.slice(8)
+  const payloads = [
+    JSON.stringify({
+      choices: [{
+        delta: { tool_calls: [{ index: 0, id: 'call_0', type: 'function', function: { name: 'read_file', arguments: '' } }] },
+      }],
+    }),
+    JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: '', arguments: frag1 } }] } }] }),
+    JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: '', arguments: frag2 } }] } }] }),
+    JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
+    '[DONE]',
+  ]
+  const chunks = await collect(translate(payloads))
+  const blockEnd = chunks.find((c) => c.type === 'block-end' && c.block.type === 'tool-call')
+  const finish = chunks.find((c) => c.type === 'finish')
+  assert.equal(blockEnd.block.name, 'read_file')
+  assert.equal(blockEnd.block.id, 'call_0')
+  assert.equal(blockEnd.block.arguments, fullArgs)
+  assert.equal(finish.reason.kind, 'tool-calls')
+})
+
 test('translate interleaves reasoning and text blocks', async () => {
   const payloads = [
     JSON.stringify({ choices: [{ delta: { reasoning_content: 'think' } }] }),

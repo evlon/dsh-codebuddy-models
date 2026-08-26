@@ -16,7 +16,9 @@
 import type {
   GenerateOptions,
   LlmModelInfo,
+  LlmModelReasoningInfo,
   LlmProviderInfo,
+  LlmReasoningEffortInfo,
   LlmResolvedModelInfo,
   PreparedAdapterCall,
   ResolvedRetryPolicy,
@@ -25,6 +27,7 @@ import type {
 import {
   LlmAdapter,
   LlmError,
+  ReasoningEffortId,
   attributionHeaders,
 } from '@deepseek-ai/dsh-llm'
 import type { CodeBuddyAuthHeaders } from './credentials.js'
@@ -74,6 +77,24 @@ export const DEFAULT_CONTEXT_WINDOW = 1_000_000
 export const DEFAULT_MAX_TOKENS = 64_000
 /** Default idle watchdog while a stream read is outstanding. */
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
+
+/** Adapter-owned reasoning effort ids. */
+export const OFF_REASONING_EFFORT = ReasoningEffortId('off')
+export const LOW_REASONING_EFFORT = ReasoningEffortId('low')
+export const HIGH_REASONING_EFFORT = ReasoningEffortId('high')
+export const MAX_REASONING_EFFORT = ReasoningEffortId('max')
+/** Selectable reasoning efforts for CodeBuddy models (the backend streams reasoning). */
+const REASONING_EFFORTS: readonly LlmReasoningEffortInfo[] = [
+  { id: OFF_REASONING_EFFORT, name: 'Off' },
+  { id: LOW_REASONING_EFFORT, name: 'Low' },
+  { id: HIGH_REASONING_EFFORT, name: 'High' },
+  { id: MAX_REASONING_EFFORT, name: 'Max' },
+]
+/** Reasoning capability advertised on every CodeBuddy model. */
+const REASONING: LlmModelReasoningInfo = {
+  efforts: REASONING_EFFORTS,
+  defaultEffort: HIGH_REASONING_EFFORT,
+}
 
 /** The default CodeBuddy model catalog (mirrors the desktop client list). */
 export const DEFAULT_MODELS: readonly CodeBuddyCatalogModel[] = [
@@ -170,6 +191,9 @@ function serializeRequest(options: GenerateOptions): Record<string, unknown> {
   if (options.temperature !== undefined) body.temperature = options.temperature
   if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens
   if (options.stop !== undefined) body.stop = options.stop
+  if (options.reasoningEffort !== undefined && options.reasoningEffort !== OFF_REASONING_EFFORT) {
+    body.reasoning_effort = options.reasoningEffort
+  }
   return body
 }
 
@@ -225,6 +249,7 @@ export class CodeBuddyAdapter extends LlmAdapter {
       : modelInfo(provider, configured)
     return Promise.resolve({
       ...info,
+      reasoning: REASONING,
       context: { contextWindow: configured?.contextWindow ?? connection.defaultContextWindow },
       defaultMaxTokens: configured?.maxTokens ?? connection.maxTokens,
     })
