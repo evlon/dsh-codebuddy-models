@@ -1,0 +1,11 @@
+# dsh-codebuddy-models bundle layer: inserts the CodeBuddy provider row into the
+# composition. Patch rows win per-row by id; the whole `config` value is
+# replaced, not merged.
+#
+# Enabling this row registers the `codebuddy` provider route and its models in
+# the dsh model picker. All fields are optional; `llm-codebuddy:` in
+# $DSH_HOME/settings.yaml may override them live.
+- insert:
+    - id: llm-codebuddy
+      name: dsh-codebuddy-models
+      config: {}
