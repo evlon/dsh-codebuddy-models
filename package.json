@@ -35,8 +35,28 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
     "prepare": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.json && node --test tests/"
+    "prepublishOnly": "npm run build && npm run test",
+    "test": "tsc -p tsconfig.json && node --test tests/*.test.mjs"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/evlon/dsh-codebuddy-models.git"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "codebuddy",
+    "workbuddy",
+    "cordis",
+    "llm",
+    "plugin",
+    "bundle"
+  ],
+  "author": "evlon",
+  "bugs": {
+    "url": "https://github.com/evlon/dsh-codebuddy-models/issues"
+  },
+  "homepage": "https://github.com/evlon/dsh-codebuddy-models#readme",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
