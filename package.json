@@ -32,9 +32,9 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/bundle.mjs",
     "dev": "tsc -p tsconfig.json --watch",
-    "prepare": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build && npm run test",
     "test": "tsc -p tsconfig.json && node --test tests/*.test.mjs"
   },
@@ -64,7 +64,6 @@
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-anonymous-user-id": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-llm": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1",
@@ -77,6 +76,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.0"
   }
 }

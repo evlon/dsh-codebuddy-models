@@ -3,6 +3,8 @@
 把本机已登录的 **CodeBuddy / WorkBuddy（腾讯代码助手）** 订阅作为 **dsh（DeepSeek Harness）** 的原生 provider 接入，启用后 CodeBuddy 模型会直接出现在 dsh 的模型选择器中，可像其它模型一样被 agent 调用。
 
 > 用 TypeScript 实现，不依赖 `codebuddy2openai` 的 Python 转换器：凭据读取、token 刷新、直连后端、SSE 流式全部在这个包里完成。
+>
+> 构建时用 esbuild 把运行期依赖（`@deepseek-ai/dsh-llm`、`dsh-settings`、`schemastery`、`eventsource-parser`）**内联打包进 `lib/index.js`**，发布产物自包含、无外部运行期 import——这样它在 **DeepSeek Harness Desktop 的 `preset-plugins` 目录（没有 node_modules）** 里也能像官方 `dsh-tauri*` 插件一样直接加载。
 
 ## 工作原理
 
@@ -33,7 +35,7 @@ dsh 模型选择器 ── listProviders() / listModels('codebuddy')
 
 ```bash
 pnpm install        # 安装依赖
-pnpm build          # tsc 编译到 lib/
+pnpm build          # tsc 编译到 lib/ + esbuild 打包自包含 lib/index.js
 pnpm test           # node --test 单元测试
 node verify.mjs     # 校验 provider + models 在真实 llm runtime 上注册成功
 node live-check.mjs # 用本机登录态打一次真实流式请求（需 CodeBuddy 已登录）
