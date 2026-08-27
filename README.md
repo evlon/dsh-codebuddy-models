@@ -39,9 +39,27 @@ node verify.mjs     # 校验 provider + models 在真实 llm runtime 上注册�
 node live-check.mjs # 用本机登录态打一次真实流式请求（需 CodeBuddy 已登录）
 ```
 
-## 安装到 dsh profile（web GUI）
+## 安装（推荐：已发布到 npm）
 
-与 `dsh-matrix` 相同的本地 bundle 方式：
+包已发布到 npm，任意 dsh profile 一行命令安装：
+
+```bash
+# 安装到默认（当前）profile
+dsh plugin --profile <profile名> add dsh-codebuddy-models
+
+# 例如装到 web GUI profile
+dsh plugin --profile web add dsh-codebuddy-models
+```
+
+`dsh plugin add` 会在 profile 里 `pnpm add` 该包，并**自动**把 `dsh-codebuddy-models` 追加到 `dsh.profile.bundles` 层栈（因为包声明了 `dsh.bundle`）。装完**重启/刷新 GUI** 后，模型选择器中即出现 `CodeBuddy` 提供方及其模型。
+
+> 模型 provider 目录在进程启动时组成，因此启用/移除该 bundle 后需要刷新/重启 GUI 才生效。
+
+前置条件：本机需已登录 **CodeBuddy / WorkBuddy 桌面端**（插件读取其本地登录文件，不做登录授权）。
+
+## 开发模式（本地源码 bundle）
+
+开发/调试本包时，用与 `dsh-matrix` 相同的本地 link 方式：
 
 1. 在 `C:\Users\niukl\.dsh\profiles\web\package.json`：
    - `dependencies` 加 `"dsh-codebuddy-models": "link:E:/ai-works/dsh-codebuddy-models"`
@@ -49,7 +67,7 @@ node live-check.mjs # 用本机登录态打一次真实流式请求（需 CodeBu
 2. 在 profile 目录执行 `pnpm install`（自动创建 `node_modules\dsh-codebuddy-models` 符号链接）。
 3. 重启/刷新 :3080 GUI，模型选择器中即可看到 `CodeBuddy` 提供方及其模型。
 
-> 模型 provider 目录在进程启动时组成，因此启用/移除该 bundle 后需要刷新/重启 GUI 才生效。
+（或者：在插件仓库目录执行 `dsh plugin --profile web add ./dsh-codebuddy-models`，等价且自动注册。）
 
 ## 配置
 
@@ -89,3 +107,12 @@ CodeBuddy 后端的工具调用流式返回有一个特点：真实工具名只�
 - **未登录 CodeBuddy**：找不到 auth 文件时模型仍会显示，但请求失败并给出 `MISSING_CREDENTIAL` 提示。
 - **token 过期**：自动刷新；刷新失败给出明确 `AUTH` 错误。
 - 需要本机已登录 CodeBuddy / WorkBuddy 桌面端。
+
+## 发布到 npm
+
+通过 GitHub Actions（`.github/workflows/npm-publish.yml`）自动发布：推送 `v*` 标签即触发「构建 → 测试 → `npm publish`」。需在仓库 Secrets 里配好 `NPM_TOKEN`。
+
+```bash
+npm version patch   # 或 minor / major —— 自动改版本号 + 打标签
+git push && git push --tags   # 触发 Actions 发布
+```
