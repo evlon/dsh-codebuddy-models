@@ -22,7 +22,7 @@ export const BACKEND = 'https://copilot.tencent.com'
 /** Fallback X-Domain header value when the auth record has no domain. */
 export const DEFAULT_DOMAIN = 'www.codebuddy.cn'
 /** Uvicorn/gateway-style user agent used for backend requests. */
-export const USER_AGENT = 'dsh-codebuddy-models/0.1'
+export const USER_AGENT = 'dsh-codebuddy-models/0.1.1'
 
 /** Headers needed to authenticate one backend request. */
 export interface CodeBuddyAuthHeaders {
