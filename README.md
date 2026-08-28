@@ -59,6 +59,12 @@ dsh plugin --profile web add dsh-codebuddy-models
 
 前置条件：本机需已登录 **CodeBuddy / WorkBuddy 桌面端**（插件读取其本地登录文件，不做登录授权）。
 
+### 设置页 UI（模型配置）
+
+dsh web 的设置页会多出一个「**CodeBuddy 模型**」区块（本包的 client 半 `lib/client.js` 注册），提供图形化的模型配置：API 地址、默认上下文窗口 / 最大输出 / 流空闲超时，以及**模型目录的增删改**（id / 显示名 / 描述 / 上下文窗口 / 最大输出）。保存即写入 `llm-codebuddy` 设置命名空间并即时生效（`applies: live`）。
+
+> 说明：dsh 自带的「模型」设置页只认识 `llm-deepseek` / `llm-pi-ai` 两个命名空间，其它命名空间会显示「其余字段在 settings.yaml 中」的提示；因此本包自带了这个独立设置区块，而不是复用「模型」页内的编辑器。
+
 ## 开发模式（本地源码 bundle）
 
 开发/调试本包时，用与 `dsh-matrix` 相同的本地 link 方式：

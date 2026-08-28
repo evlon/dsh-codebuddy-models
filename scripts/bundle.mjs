@@ -34,3 +34,8 @@ await build({
 })
 
 console.log('bundled lib/index.js (self-contained)')
+
+// The browser half bundles separately (react externalized, CJS module-loader
+// wrapper) and is emitted at lib/client.js. Run it so a single `build` produces
+// both host and client artifacts.
+await import('./build-client.mjs')
