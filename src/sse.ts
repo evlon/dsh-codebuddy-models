@@ -18,6 +18,16 @@ import { CallId, LlmError } from '@deepseek-ai/dsh-llm'
 /** The terminal payload OpenAI-compatible backends send after the last chunk. */
 export const DONE = '[DONE]'
 
+/** Whether a string is syntactically valid JSON (including `null`/numbers). */
+function isValidJson(text: string): boolean {
+  try {
+    JSON.parse(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Wire usage object reported by the backend. */
 export interface WireUsage {
   prompt_tokens?: number
@@ -194,7 +204,28 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
     if (payload === DONE) {
       for (const block of order) yield close(block)
       if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
-      const reason = pendingFinish ?? { kind: 'stop' }
+      let reason = pendingFinish ?? { kind: 'stop' }
+      // A tool-call block whose arguments are non-empty but not valid JSON is
+      // a truncated stream: the backend cut the model's arguments mid-string.
+      // Forwarding it would surface a confusing presenter warning and execute
+      // a tool with garbage input, so fail the turn with a clear message.
+      if (reason.kind === 'tool-calls' || reason.kind === 'stop') {
+        const malformed = order.find(
+          (block): block is ToolBlock =>
+            block.kind === 'tool-call' &&
+            block.text.length > 0 &&
+            !isValidJson(block.text),
+        )
+        if (malformed !== undefined) {
+          reason = {
+            kind: 'error',
+            failure: {
+              message: `模型返回了不完整的工具调用参数（JSON 被截断），工具 "${malformed.name ?? '未知'}" 的参数不是有效的 JSON。请重试。`,
+              code: 'MALFORMED_TOOL_ARGS',
+            },
+          }
+        }
+      }
       yield {
         type: 'finish',
         reason:

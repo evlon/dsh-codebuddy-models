@@ -171,3 +171,39 @@ test('translate surfaces an in-band model-not-allowed error (11136)', async () =
     },
   )
 })
+
+test('translate turns a truncated tool-call arguments stream into MALFORMED_TOOL_ARGS', async () => {
+  // Backend cuts the model's arguments mid-string, then finishes the stream.
+  const payloads = [
+    JSON.stringify({
+      choices: [{
+        delta: { tool_calls: [{ index: 0, id: 'call_9', type: 'function', function: { name: 'read_file', arguments: '' } }] },
+      }],
+    }),
+    JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: '', arguments: '{"path": "C:/tmp/a.' } }] } }] }),
+    JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
+    '[DONE]',
+  ]
+  const chunks = await collect(translate(payloads))
+  const finish = chunks.find((c) => c.type === 'finish')
+  assert.equal(finish.reason.kind, 'error')
+  assert.equal(finish.reason.failure.code, 'MALFORMED_TOOL_ARGS')
+  assert.match(finish.reason.failure.message, /不完整/)
+})
+
+test('translate keeps valid tool-call arguments as tool-calls finish', async () => {
+  const fullArgs = JSON.stringify({ path: 'C:/tmp/a.txt' })
+  const payloads = [
+    JSON.stringify({
+      choices: [{
+        delta: { tool_calls: [{ index: 0, id: 'call_10', type: 'function', function: { name: 'read_file', arguments: '' } }] },
+      }],
+    }),
+    JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: '', arguments: fullArgs } }] } }] }),
+    JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
+    '[DONE]',
+  ]
+  const chunks = await collect(translate(payloads))
+  const finish = chunks.find((c) => c.type === 'finish')
+  assert.equal(finish.reason.kind, 'tool-calls')
+})
