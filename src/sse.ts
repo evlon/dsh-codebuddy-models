@@ -46,7 +46,42 @@ export interface WireChoice {
 export interface WireChunk {
   choices?: WireChoice[]
   usage?: WireUsage
+  /** In-band error object the backend may emit instead of (or before) `[DONE]`. */
+  error?: {
+    code?: number
+    msg?: string
+    message?: string
+    type?: string
+  }
 }
+
+/**
+ * CodeBuddy business-error codes the adapter recognizes. Anything else falls
+ * back to the HTTP-status mapping in the caller.
+ */
+export const CODEBUDDY_ENTERPRISE_QUOTA_CODE = 14012
+export const CODEBUDDY_MODEL_NOT_ALLOWED_CODE = 11136
+
+/**
+ * Classify a CodeBuddy business error code onto a stable harness LlmError
+ * code. Quota exhaustion (14012) and subscription policy rejection (11136)
+ * are terminal: neither belongs to the default retryable set, so the harness
+ * will not retry them and will surface the failure to the user directly.
+ * @param code - the provider business error code, when present.
+ * @param type - the provider error type tag, when present (e.g. PI_AL_ERROR).
+ * @returns the stable LlmError code, or `undefined` to use HTTP-status mapping.
+ */
+export function classifyCode(code: number | undefined, type?: string): string | undefined {
+  if (code === CODEBUDDY_ENTERPRISE_QUOTA_CODE || type === 'PI_AL_ERROR') return 'QUOTA'
+  if (code === CODEBUDDY_MODEL_NOT_ALLOWED_CODE) return 'MODEL_NOT_ALLOWED'
+  return undefined
+}
+
+/** User-facing message for the enterprise quota ceiling. */
+export const ENTERPRISE_QUOTA_MESSAGE = '已达到企业为您设置的额度上限，如需调整额度，请联系企业管理员。'
+/** User-facing message for a model outside the subscription. */
+export const MODEL_NOT_ALLOWED_MESSAGE = '您暂无该模型的使用权限，请联系管理员。'
+
 
 /**
  * Parse a fetch response body into SSE data payloads. The literal `[DONE]` is
@@ -181,6 +216,23 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
       chunk = JSON.parse(payload) as WireChunk
     } catch {
       throw new LlmError(`malformed SSE payload: ${payload.slice(0, 120)}`, 'MALFORMED_RESPONSE')
+    }
+
+    // In-band error: the backend may abort the stream with an error object
+    // instead of emitting `[DONE]`. Surface it with a stable code so the
+    // harness reports the real failure (e.g. enterprise quota) instead of a
+    // generic STREAM_CLOSED.
+    if (chunk.error !== undefined) {
+      const stable = classifyCode(chunk.error.code, chunk.error.type)
+      const rawMessage = chunk.error.msg ?? chunk.error.message
+      let message = rawMessage
+      let code = stable
+      if (code === 'QUOTA' && message === undefined) message = ENTERPRISE_QUOTA_MESSAGE
+      if (code === 'MODEL_NOT_ALLOWED' && message === undefined) message = MODEL_NOT_ALLOWED_MESSAGE
+      if (message === undefined) message = rawMessage ?? 'CodeBuddy API error'
+      throw new LlmError(message, code ?? 'INVALID_RESPONSE', {
+        cause: new Error(`in-band SSE error: ${JSON.stringify(chunk.error)}`),
+      })
     }
 
     for (const choice of chunk.choices ?? []) {

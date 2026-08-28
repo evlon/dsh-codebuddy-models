@@ -27,11 +27,18 @@ import type {
 import {
   LlmAdapter,
   LlmError,
+  ProviderRequestId,
   ReasoningEffortId,
   attributionHeaders,
 } from '@deepseek-ai/dsh-llm'
 import type { CodeBuddyAuthHeaders } from './credentials.js'
-import { parseSse, translate } from './sse.js'
+import {
+  ENTERPRISE_QUOTA_MESSAGE,
+  MODEL_NOT_ALLOWED_MESSAGE,
+  classifyCode,
+  parseSse,
+  translate,
+} from './sse.js'
 
 /** One optional model entry advertised by the adapter. */
 export interface CodeBuddyCatalogModel {
@@ -206,6 +213,54 @@ function httpErrorCode(status: number): string {
   return `HTTP_${status}`
 }
 
+/** Classified facts for one non-2xx backend response. */
+export interface ClassifiedHttpError {
+  code: string
+  message: string
+  requestId?: string
+}
+
+/**
+ * Classify a non-2xx CodeBuddy response into a stable LlmError code and a
+ * user-facing message. Recognized business codes (enterprise quota 14012,
+ * subscription policy 11136) map onto harness codes that are NOT in the
+ * default retryable set, so the harness reports the failure without retrying.
+ * @param status - the HTTP status code.
+ * @param raw - the response body text (may be empty or non-JSON).
+ */
+export function classifyHttpError(status: number, raw: string): ClassifiedHttpError {
+  const fallback = httpErrorCode(status)
+  const fallbackMessage = `CodeBuddy API error (HTTP ${status})`
+  if (raw.length === 0) return { code: fallback, message: fallbackMessage }
+  let parsed: {
+    code?: number
+    msg?: string
+    displayMsg?: { zh?: string }
+    error?: { code?: number; msg?: string; message?: string; type?: string; requestId?: string }
+  }
+  try {
+    parsed = JSON.parse(raw) as typeof parsed
+  } catch {
+    return { code: fallback, message: raw.slice(0, 300) || fallbackMessage }
+  }
+  const code = parsed.code ?? parsed.error?.code
+  const rawMessage = parsed.msg ?? parsed.error?.msg ?? parsed.error?.message
+  const requestId = parsed.error?.requestId
+  const stable = classifyCode(code, parsed.error?.type)
+  if (stable === 'QUOTA') {
+    return { code: stable, message: rawMessage ?? ENTERPRISE_QUOTA_MESSAGE, ...(requestId ? { requestId } : {}) }
+  }
+  if (stable === 'MODEL_NOT_ALLOWED') {
+    return {
+      code: stable,
+      message: parsed.displayMsg?.zh ?? rawMessage ?? MODEL_NOT_ALLOWED_MESSAGE,
+      ...(requestId ? { requestId } : {}),
+    }
+  }
+  return { code: fallback, message: rawMessage ?? fallbackMessage, ...(requestId ? { requestId } : {}) }
+}
+
+
 /** Build one {@link LlmModelInfo} for a catalog model. */
 function modelInfo(provider: string, model: CodeBuddyCatalogModel): LlmModelInfo {
   return {
@@ -294,30 +349,11 @@ export class CodeBuddyAdapter extends LlmAdapter {
 
     if (!response.ok) {
       const raw = await response.text().catch(() => '')
-      let message = `CodeBuddy API error (HTTP ${response.status})`
-      let code = httpErrorCode(response.status)
-      try {
-        const parsed = JSON.parse(raw) as {
-          code?: number
-          msg?: string
-          displayMsg?: { zh?: string }
-          error?: { message?: string }
-        }
-        // CodeBuddy policy rejection: model not in the subscription.
-        if (parsed.code === 11136) {
-          code = 'MODEL_NOT_ALLOWED'
-          message = parsed.displayMsg?.zh ?? parsed.msg ?? '您暂无该模型的使用权限，请联系管理员。'
-        } else if (parsed.error?.message) {
-          message = parsed.error.message
-        } else if (parsed.msg) {
-          message = parsed.msg
-        }
-      } catch {
-        /* keep the HTTP-status message */
-      }
-      throw new LlmError(message, code, {
+      const classified = classifyHttpError(response.status, raw)
+      throw new LlmError(classified.message, classified.code, {
         cause: new Error(raw.length > 0 ? raw : `CodeBuddy HTTP ${response.status}`),
         status: response.status,
+        ...(classified.requestId !== undefined ? { requestId: ProviderRequestId(classified.requestId) } : {}),
       })
     }
 

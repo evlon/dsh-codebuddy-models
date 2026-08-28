@@ -144,3 +144,30 @@ test('parseSse decodes a byte stream and yields [DONE]', async () => {
   for await (const p of parseSse(stream)) payloads.push(p)
   assert.deepEqual(payloads, ['{"a":1}', '[DONE]'])
 })
+
+test('translate surfaces an in-band enterprise quota error (14012) as QUOTA', async () => {
+  const payloads = [
+    JSON.stringify({ error: { code: 14012, msg: '已达到企业为您设置的额度上限，如需调整额度，请联系企业管理员。', type: 'PI_AL_ERROR', requestId: 'r-14012' } }),
+  ]
+  await assert.rejects(
+    () => collect(translate(payloads)),
+    (error) => {
+      assert.equal(error.code, 'QUOTA')
+      assert.match(error.message, /额度上限/)
+      return true
+    },
+  )
+})
+
+test('translate surfaces an in-band model-not-allowed error (11136)', async () => {
+  const payloads = [
+    JSON.stringify({ error: { code: 11136, msg: 'model not allowed by policy' } }),
+  ]
+  await assert.rejects(
+    () => collect(translate(payloads)),
+    (error) => {
+      assert.equal(error.code, 'MODEL_NOT_ALLOWED')
+      return true
+    },
+  )
+})
