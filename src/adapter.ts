@@ -76,6 +76,12 @@ export interface CodeBuddyAdapterOptions {
   options: () => CodeBuddyConnectionOptions
   /** Resolve the authenticated backend headers (token + account identity). */
   resolveHeaders: () => Promise<CodeBuddyAuthHeaders>
+  /**
+   * Resolve the enterprise builtin-models directory, or `undefined` when
+   * unavailable (no login, non-enterprise account, or a fetch failure). The
+   * adapter prefers this live catalog and falls back to the static default.
+   */
+  resolveDirectory?: () => Promise<readonly import('./credentials.js').CodeBuddyEnterpriseModel[] | undefined>
 }
 
 /** Default combined request/response context capacity. */
@@ -273,6 +279,26 @@ function modelInfo(provider: string, model: CodeBuddyCatalogModel): LlmModelInfo
 }
 
 /**
+ * Map one enterprise directory entry onto an {@link LlmModelInfo}. Only
+ * `enabled` models are advertised; capacities come from the subscription grant
+ * when present.
+ * @param provider - the provider route id.
+ * @param model - one directory entry.
+ */
+function enterpriseModelInfo(
+  provider: string,
+  model: import('./credentials.js').CodeBuddyEnterpriseModel,
+): LlmModelInfo {
+  return {
+    provider,
+    id: model.id,
+    name: model.name ?? model.id,
+    ...(model.descriptionZh !== undefined && model.descriptionZh.length > 0 ? { description: model.descriptionZh } : {}),
+    inputModalities: ['text'],
+  }
+}
+
+/**
  * The CodeBuddy adapter. One instance serves every model name it was
  * registered under (the harness model name IS the wire model name).
  */
@@ -292,8 +318,14 @@ export class CodeBuddyAdapter extends LlmAdapter {
     return this.config.options().retryPolicy
   }
 
-  listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    return Promise.resolve(this.config.options().models.map((model) => modelInfo(provider, model)))
+  async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const staticModels = this.config.options().models.map((model) => modelInfo(provider, model))
+    if (this.config.resolveDirectory === undefined) return staticModels
+    const directory = await this.config.resolveDirectory().catch(() => undefined)
+    if (directory === undefined) return staticModels
+    const enabled = directory.filter((entry) => entry.status === 'enabled')
+    if (enabled.length === 0) return staticModels
+    return enabled.map((entry) => enterpriseModelInfo(provider, entry))
   }
 
   resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {

@@ -24,7 +24,7 @@ import { deepEqualJson, installSettingsSection, settingsNamespace } from '@deeps
 
 import { CodeBuddyAdapter, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DEFAULT_STREAM_IDLE_TIMEOUT_MS, DEFAULT_MODELS } from './adapter.js'
 import type { CodeBuddyCatalogModel } from './adapter.js'
-import { CredentialManager, findAuthFile } from './credentials.js'
+import { CredentialManager, EnterpriseModelDirectory, findAuthFile } from './credentials.js'
 
 export * from './adapter.js'
 export * from './credentials.js'
@@ -146,6 +146,7 @@ export function apply(ctx: Context, config: Config): void {
     )
   }
   let manager: CredentialManager | undefined = authFile === undefined ? undefined : new CredentialManager(authFile)
+  let directory: EnterpriseModelDirectory | undefined = manager === undefined ? undefined : new EnterpriseModelDirectory(manager)
 
   const adapter = new CodeBuddyAdapter({
     options,
@@ -161,6 +162,14 @@ export function apply(ctx: Context, config: Config): void {
         manager = new CredentialManager(file)
       }
       return manager.getHeaders()
+    },
+    resolveDirectory: async () => {
+      if (directory === undefined) {
+        const file = findAuthFile()
+        if (file === undefined) return undefined
+        directory = new EnterpriseModelDirectory(new CredentialManager(file))
+      }
+      return directory.read()
     },
   })
 

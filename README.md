@@ -98,9 +98,11 @@ llm-codebuddy:
 
 ## 模型与权限
 
-默认模型目录即桌面端列表；具体账号能用哪些模型由**订阅策略**决定。某模型无权限时后端返回 `11136 / model not allowed by policy`，插件会映射为 `MODEL_NOT_ALLOWED` 错误并给出可读提示（"您暂无该模型的使用权限，请联系管理员。"）。
+模型目录**自动从企业内置模型接口获取**（`www.codebuddy.cn/console/enterprises/{enterpriseId}/builtin-models`，用桌面端登录态鉴权，10 分钟缓存）：企业账号能看到并启用的模型会自动出现在选择器里，无需维护硬编码列表。获取失败（未登录 / 非企业账号 / 网络异常）时回退到内置静态目录。
 
-> 本账号实测可用的模型：`deepseek-v4-pro`、`deepseek-v4-flash`、`auto`。
+具体账号能用哪些模型由**订阅策略**决定。某模型无权限时后端返回 `11136 / model not allowed by policy`，插件会映射为 `MODEL_NOT_ALLOWED` 错误并给出可读提示（"您暂无该模型的使用权限，请联系管理员。"）。
+
+> 本企业账号实测可用的模型（自动获取）：`deepseek-v4-pro`、`deepseek-v4-flash`、`glm-5.3`、`glm-5.2`、`kimi-k3-2`、`hy4-preview`、`auto` 等 20 个。
 
 ## 推理能力（reasoning）
 
