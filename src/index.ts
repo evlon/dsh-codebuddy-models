@@ -60,12 +60,6 @@ export interface Config {
   streamIdleTimeoutMs?: number
   /** Provider-owned model-request retry policy. */
   retryPolicy?: import('@deepseek-ai/dsh-llm').RetryPolicyConfig
-  /**
-   * Read-only mirror of the enterprise builtin-models directory (host-written;
-   * not a user-editable field). Empty when unavailable (non-enterprise login
-   * or a fetch failure).
-   */
-  enterpriseModelsSnapshot?: import('./credentials.js').CodeBuddyEnterpriseModel[]
 }
 
 export const Config: z<Config> = z.object({
@@ -75,8 +69,6 @@ export const Config: z<Config> = z.object({
   models: z.array(catalogModel).default(DEFAULT_MODELS as unknown as Schemastery.TypeT<typeof catalogModel>[]),
   streamIdleTimeoutMs: z.number().step(1).min(1).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
   retryPolicy: RetryPolicySchema,
-  // Host-written read-only mirror; never edited by the user layer.
-  enterpriseModelsSnapshot: z.any().default([]),
 })
 
 /** Public backend origin; the adapter appends `/v2/chat/completions`. */
@@ -198,9 +190,11 @@ export function apply(ctx: Context, config: Config): void {
     registeredPolicy = policy
   }
 
-  // Settings: register the `llm-codebuddy` namespace (live), wire the config
-  // source so edits re-resolve the adapter facts, and mirror the enterprise
-  // model directory into a read-only snapshot the settings UI displays.
+  // Settings: register the `llm-codebuddy` namespace (live) and wire the
+  // config source so edits re-resolve the adapter facts. The enterprise model
+  // directory is NOT persisted here — it is fetched on demand by the adapter
+  // (`listModels`) and read by the settings UI through the LLM model API, so
+  // nothing runtime-derived is written to settings.yaml.
   ctx.inject(['settings'], (sctx) => {
     const settings = sctx.settings as {
       register(
@@ -221,21 +215,7 @@ export function apply(ctx: Context, config: Config): void {
     applyUser()
     const unsub = scope.watch(() => applyUser())
     ensureRegistrationFacts()
-
-    // Periodic snapshot writer: publish the enterprise directory into the
-    // namespace so the settings UI can render it read-only.
-    let stopped = false
-    const writeSnapshot = async (): Promise<void> => {
-      if (stopped || directory === undefined) return
-      const models = await directory.read().catch(() => undefined)
-      if (stopped || models === undefined) return
-      await scope.update({ enterpriseModelsSnapshot: models }).catch(() => undefined)
-    }
-    void writeSnapshot()
-    const timer = setInterval(() => void writeSnapshot(), EnterpriseModelDirectory.TTL_MS)
     sctx.effect(() => () => {
-      stopped = true
-      clearInterval(timer)
       unsub()
     })
   })

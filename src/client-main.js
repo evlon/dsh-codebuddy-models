@@ -121,6 +121,8 @@ function CodeBuddySettingsPage(props) {
   const [form, setForm] = React.useState(() => mergeFormSection(undefined))
   const [saved, setSaved] = React.useState(false)
   const [error, setError] = React.useState(undefined)
+  const [liveModels, setLiveModels] = React.useState(undefined) // undefined = loading
+  const [liveFailures, setLiveFailures] = React.useState(undefined)
 
   React.useEffect(() => {
     const update = () => setForm(mergeFormSection(sectionOf(scope)))
@@ -128,6 +130,30 @@ function CodeBuddySettingsPage(props) {
     if (scope !== undefined) return scope.subscribe(update)
     return undefined
   }, [scope])
+
+  // Live enterprise model directory: fetched on demand from the host's LLM
+  // model API (which the adapter resolves from the enterprise builtin-models
+  // directory). Nothing runtime-derived is persisted to settings.
+  React.useEffect(() => {
+    const conn = ctx.get('connection')
+    if (conn === undefined || conn.api === undefined) return undefined
+    let alive = true
+    const load = () => {
+      conn.api.llm.models({}).then((res) => {
+        if (!alive) return
+        if (res.result?.ok !== true) { setLiveModels([]); setLiveFailures('模型目录加载失败'); return }
+        const groups = Array.isArray(res.result.value?.groups) ? res.result.value.groups : []
+        const group = groups.find((g) => g.id === 'codebuddy')
+        const list = (group !== undefined && Array.isArray(group.models)) ? group.models : []
+        setLiveModels(list)
+        setLiveFailures(undefined)
+      }).catch(() => {
+        if (alive) { setLiveModels([]); setLiveFailures('模型目录加载失败') }
+      })
+    }
+    load()
+    return () => { alive = false }
+  }, [ctx])
 
   const set = (field) => (value) => {
     setForm((prev) => Object.assign({}, prev, { [field]: value }))
@@ -176,13 +202,13 @@ function CodeBuddySettingsPage(props) {
   const removeModel = (index) => set('models')(normalizeModels(form.models).filter((_, i) => i !== index))
 
   const models = normalizeModels(form.models)
-  const snapshot = Array.isArray(form.enterpriseModelsSnapshot) ? form.enterpriseModelsSnapshot : []
-  const snapshotUsable = snapshot.length > 0
+  const liveList = liveModels === undefined ? undefined : liveModels
+  const liveUsable = Array.isArray(liveList) && liveList.length > 0
 
   return React.createElement('div', null,
     React.createElement('h3', { style: { margin: '0 0 4px', color: 'var(--dsw-alias-label-primary)' } }, 'CodeBuddy 模型'),
     React.createElement('p', { style: HINT_STYLE },
-      '模型目录自动从你的 CodeBuddy 企业账号获取（仅企业账号可用）。此处可调整请求参数；保存后即时生效（live）。'),
+      '模型目录自动从你的 CodeBuddy 企业账号获取（仅企业账号可用，启动时获取、不保存）。此处可调整请求参数；保存后即时生效（live）。'),
     React.createElement(TextField, {
       label: 'API 地址（baseURL）', value: form.baseURL, onChange: set('baseURL'),
       placeholder: 'https://copilot.tencent.com',
@@ -194,11 +220,14 @@ function CodeBuddySettingsPage(props) {
 
     React.createElement('div', { style: FIELD_STYLE },
       React.createElement('label', { style: LABEL_STYLE }, '企业模型目录（自动获取 · 只读）'),
-      snapshotUsable
-        ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' } },
-            snapshot.map((m) => React.createElement(EnterpriseModelRow, { key: m.id, model: m })))
-        : React.createElement('p', { style: HINT_STYLE },
-            '暂未获取到企业模型列表（未登录 CodeBuddy 桌面端 / 非企业账号 / 网络异常）。模型选择器将只显示默认的 auto 模型。')),
+      liveModels === undefined
+        ? React.createElement('p', { style: HINT_STYLE }, '正在获取企业模型目录…')
+        : liveUsable
+          ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' } },
+              liveList.map((m) => React.createElement(EnterpriseModelRow, { key: m.id, model: m })))
+          : React.createElement('p', { style: HINT_STYLE },
+              (liveFailures !== undefined ? liveFailures + '。' : '') +
+              '暂未获取到企业模型列表（未登录 CodeBuddy 桌面端 / 非企业账号 / 网络异常）。模型选择器将只显示默认的 auto 模型。')),
 
     React.createElement('details', { style: { marginBottom: '12px' } },
       React.createElement('summary', { style: { cursor: 'pointer', fontSize: '13px', color: 'var(--dsw-alias-label-secondary)' } },
@@ -235,12 +264,15 @@ function EnterpriseModelRow(props) {
   const caps = []
   if (typeof model.maxInputTokens === 'number') caps.push('输入 ' + formatNumber(model.maxInputTokens))
   if (typeof model.maxOutputTokens === 'number') caps.push('输出 ' + formatNumber(model.maxOutputTokens))
+  const description = typeof model.descriptionZh === 'string' && model.descriptionZh !== ''
+    ? model.descriptionZh
+    : (typeof model.description === 'string' && model.description !== '' ? model.description : undefined)
   return React.createElement('div', {
     style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '6px', padding: '6px 8px' },
   },
     React.createElement('div', { style: ROW_STYLE },
       React.createElement('span', { style: idStyle }, model.id),
-      model.status !== 'enabled'
+      model.status !== undefined && model.status !== 'enabled'
         ? React.createElement('span', { style: Object.assign({}, subStyle, { color: 'var(--dsw-alias-state-warn-primary)' }) }, model.status)
         : null),
     React.createElement('div', { style: cell },
@@ -248,9 +280,7 @@ function EnterpriseModelRow(props) {
         ? React.createElement('span', { style: subStyle }, model.name)
         : null,
       caps.length > 0 ? React.createElement('span', { style: subStyle }, caps.join(' · ')) : null,
-      typeof model.descriptionZh === 'string' && model.descriptionZh !== ''
-        ? React.createElement('span', { style: subStyle }, model.descriptionZh)
-        : null))
+      description !== undefined ? React.createElement('span', { style: subStyle }, description) : null))
 }
 
 /** Format a capacity with K/M suffixes for display. */
