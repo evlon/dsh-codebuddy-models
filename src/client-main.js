@@ -180,7 +180,7 @@ function CodeBuddySettingsPage(props) {
   return React.createElement('div', null,
     React.createElement('h3', { style: { margin: '0 0 4px', color: 'var(--dsw-alias-label-primary)' } }, 'CodeBuddy 模型'),
     React.createElement('p', { style: HINT_STYLE },
-      '管理 CodeBuddy 提供方的模型目录与请求参数。保存后即时生效（live）。'),
+      '模型目录自动从你的 CodeBuddy 企业账号获取（仅企业账号可用；个人账号看不到模型列表时会使用下面的回退目录）。此处可调整请求参数。保存后即时生效（live）。'),
     React.createElement(TextField, {
       label: 'API 地址（baseURL）', value: form.baseURL, onChange: set('baseURL'),
       placeholder: 'https://copilot.tencent.com',
@@ -191,7 +191,9 @@ function CodeBuddySettingsPage(props) {
     React.createElement(NumberField, { label: '流空闲超时（streamIdleTimeoutMs，毫秒）', value: form.streamIdleTimeoutMs, onChange: set('streamIdleTimeoutMs'), placeholder: '300000' }),
 
     React.createElement('div', { style: FIELD_STYLE },
-      React.createElement('label', { style: LABEL_STYLE }, '模型目录（models）'),
+      React.createElement('label', { style: LABEL_STYLE }, '回退模型目录（models）'),
+      React.createElement('p', { style: HINT_STYLE },
+        '企业账号会自动获取模型列表，正常无需编辑这里；仅在自动获取不可用（未登录 / 个人账号 / 网络异常）时，模型选择器才使用这份手动目录。'),
       models.length === 0
         ? React.createElement('p', { style: HINT_STYLE }, '模型选择器中将不显示任何模型；目录外 ID 仍可直接发送。')
         : React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
