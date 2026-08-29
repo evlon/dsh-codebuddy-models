@@ -45,6 +45,7 @@ export const FORM_DEFAULTS = {
   maxTokens: 64000,
   streamIdleTimeoutMs: 300000,
   models: [],
+  enterpriseModelsSnapshot: [],
 }
 
 /** Merge a settings section into the form (undefined → defaults). */

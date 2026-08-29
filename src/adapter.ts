@@ -109,19 +109,15 @@ const REASONING: LlmModelReasoningInfo = {
   defaultEffort: HIGH_REASONING_EFFORT,
 }
 
-/** The default CodeBuddy model catalog (mirrors the desktop client list). */
+/**
+ * The default CodeBuddy model catalog. Deliberately minimal: only `auto` is
+ * guaranteed to stay valid across subscription changes. Enterprise accounts
+ * get their real catalog from the enterprise builtin-models directory
+ * (adapter `listModels` prefers it); `auto` covers everyone else. Other model
+ * ids still work when typed directly (`resolveModel` accepts any id).
+ */
 export const DEFAULT_MODELS: readonly CodeBuddyCatalogModel[] = [
-  { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', contextWindow: DEFAULT_CONTEXT_WINDOW },
-  { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', contextWindow: DEFAULT_CONTEXT_WINDOW },
   { id: 'auto', name: 'Auto', contextWindow: DEFAULT_CONTEXT_WINDOW },
-  { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: DEFAULT_CONTEXT_WINDOW },
-  { id: 'glm-5.1', name: 'GLM-5.1', contextWindow: DEFAULT_CONTEXT_WINDOW },
-  { id: 'glm-5v-turbo', name: 'GLM-5V-Turbo', contextWindow: DEFAULT_CONTEXT_WINDOW },
-  { id: 'kimi-k2.7', name: 'Kimi-K2.7', contextWindow: DEFAULT_CONTEXT_WINDOW },
-  { id: 'kimi-k2.6', name: 'Kimi-K2.6', contextWindow: DEFAULT_CONTEXT_WINDOW },
-  { id: 'kimi-k2.5', name: 'Kimi-K2.5', contextWindow: DEFAULT_CONTEXT_WINDOW },
-  { id: 'minimax-m3-pay', name: 'MiniMax-M3-Pay', contextWindow: DEFAULT_CONTEXT_WINDOW },
-  { id: 'hy3-preview-agent', name: 'Hunyuan-Preview-Agent', contextWindow: DEFAULT_CONTEXT_WINDOW },
 ]
 
 /** Map a wire message's content blocks into OpenAI wire messages. */

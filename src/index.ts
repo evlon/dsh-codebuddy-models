@@ -20,7 +20,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { LlmError, RetryPolicySchema, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
-import { deepEqualJson, installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { deepEqualJson, settingsNamespace } from '@deepseek-ai/dsh-settings'
 
 import { CodeBuddyAdapter, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DEFAULT_STREAM_IDLE_TIMEOUT_MS, DEFAULT_MODELS } from './adapter.js'
 import type { CodeBuddyCatalogModel } from './adapter.js'
@@ -60,6 +60,12 @@ export interface Config {
   streamIdleTimeoutMs?: number
   /** Provider-owned model-request retry policy. */
   retryPolicy?: import('@deepseek-ai/dsh-llm').RetryPolicyConfig
+  /**
+   * Read-only mirror of the enterprise builtin-models directory (host-written;
+   * not a user-editable field). Empty when unavailable (non-enterprise login
+   * or a fetch failure).
+   */
+  enterpriseModelsSnapshot?: import('./credentials.js').CodeBuddyEnterpriseModel[]
 }
 
 export const Config: z<Config> = z.object({
@@ -69,6 +75,8 @@ export const Config: z<Config> = z.object({
   models: z.array(catalogModel).default(DEFAULT_MODELS as unknown as Schemastery.TypeT<typeof catalogModel>[]),
   streamIdleTimeoutMs: z.number().step(1).min(1).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
   retryPolicy: RetryPolicySchema,
+  // Host-written read-only mirror; never edited by the user layer.
+  enterpriseModelsSnapshot: z.any().default([]),
 })
 
 /** Public backend origin; the adapter appends `/v2/chat/completions`. */
@@ -190,10 +198,45 @@ export function apply(ctx: Context, config: Config): void {
     registeredPolicy = policy
   }
 
-  installSettingsSection(ctx, NS, Config, config, {
-    setSource: (source) => {
-      current = source
-    },
-    onChange: ensureRegistrationFacts,
+  // Settings: register the `llm-codebuddy` namespace (live), wire the config
+  // source so edits re-resolve the adapter facts, and mirror the enterprise
+  // model directory into a read-only snapshot the settings UI displays.
+  ctx.inject(['settings'], (sctx) => {
+    const settings = sctx.settings as {
+      register(
+        ns: string,
+        schema: unknown,
+        options?: { applies?: string; base?: unknown },
+      ): {
+        get(): unknown
+        watch(cb: (next: unknown) => void): () => void
+        update(patch: object): Promise<void>
+      }
+    }
+    const scope = settings.register(NS, Config, { applies: 'live', base: config })
+    const applyUser = (): void => {
+      // `scope.get()` is the resolved value (base + defaults + user layer).
+      current = () => scope.get() as Config
+    }
+    applyUser()
+    const unsub = scope.watch(() => applyUser())
+    ensureRegistrationFacts()
+
+    // Periodic snapshot writer: publish the enterprise directory into the
+    // namespace so the settings UI can render it read-only.
+    let stopped = false
+    const writeSnapshot = async (): Promise<void> => {
+      if (stopped || directory === undefined) return
+      const models = await directory.read().catch(() => undefined)
+      if (stopped || models === undefined) return
+      await scope.update({ enterpriseModelsSnapshot: models }).catch(() => undefined)
+    }
+    void writeSnapshot()
+    const timer = setInterval(() => void writeSnapshot(), EnterpriseModelDirectory.TTL_MS)
+    sctx.effect(() => () => {
+      stopped = true
+      clearInterval(timer)
+      unsub()
+    })
   })
 }
