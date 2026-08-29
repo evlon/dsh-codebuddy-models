@@ -1,6 +1,6 @@
 {
   "name": "dsh-codebuddy-models",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "CodeBuddy/WorkBuddy models bundle for DeepSeek Harness (dsh): reads the local desktop login and serves the CodeBuddy subscription as a native provider route in the model picker",
   "license": "MIT",
   "type": "module",

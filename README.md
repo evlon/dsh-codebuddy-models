@@ -61,7 +61,13 @@ dsh plugin --profile web add dsh-codebuddy-models
 
 ### 设置页 UI（模型配置）
 
-dsh web 的设置页会多出一个「**CodeBuddy 模型**」区块（本包的 client 半 `lib/client.js` 注册），提供图形化的模型配置：API 地址、默认上下文窗口 / 最大输出 / 流空闲超时，以及**模型目录的增删改**（id / 显示名 / 描述 / 上下文窗口 / 最大输出）。保存即写入 `llm-codebuddy` 设置命名空间并即时生效（`applies: live`）。
+dsh web 的设置页会多出一个「**CodeBuddy 模型**」区块（本包的 client 半 `lib/client.js` 注册），提供：
+
+- **企业模型目录（自动获取 · 只读）**：实时展示从企业账号拉取到的模型列表（ID / 名称 / 输入输出容量 / 描述），无需手动维护。
+- **请求参数**：API 地址、默认上下文窗口 / 最大输出 / 流空闲超时。
+- **高级：回退模型目录（models）**：折叠区，仅在自动获取不可用（未登录 / 个人账号 / 网络异常）时生效的手写目录。
+
+保存即写入 `llm-codebuddy` 设置命名空间并即时生效（`applies: live`）。
 
 > 说明：dsh 自带的「模型」设置页只认识 `llm-deepseek` / `llm-pi-ai` 两个命名空间，其它命名空间会显示「其余字段在 settings.yaml 中」的提示；因此本包自带了这个独立设置区块，而不是复用「模型」页内的编辑器。
 
@@ -79,7 +85,7 @@ dsh web 的设置页会多出一个「**CodeBuddy 模型**」区块（本包的 
 
 ## 配置
 
-`Config` 全部可选，可用 `$DSH_HOME/settings.yaml` 的 `llm-codebuddy:` 节热改（`applies: live`）：
+`Config` 全部可选，可用 `$DSH_HOME/settings.yaml` 的 `llm-codebuddy:` 节热改（`applies: live`）。`models` 是**回退目录**（仅在企业模型自动获取不可用时生效），默认只有 `auto`：
 
 ```yaml
 llm-codebuddy:
@@ -88,9 +94,7 @@ llm-codebuddy:
   maxTokens: 64000
   streamIdleTimeoutMs: 300000
   models:
-    - id: deepseek-v4-flash
-      name: DeepSeek-V4-Flash
-      contextWindow: 1000000
+    - id: auto                       # 回退目录：默认仅 auto；可自行添加其它模型 ID
   retryPolicy:
     mode: normal
     maxRetries: 5
