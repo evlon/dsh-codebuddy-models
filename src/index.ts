@@ -101,7 +101,7 @@ function resolveModels(models: CodeBuddyCatalogModel[] | undefined): CodeBuddyCa
 }
 
 /** Resolve and validate raw config into connection facts (fail loud at load). */
-function resolveAdapterOptions(config: Config) {
+export function resolveAdapterOptions(config: Config) {
   const streamIdleTimeoutMs = config.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
   if (!Number.isFinite(streamIdleTimeoutMs) || streamIdleTimeoutMs <= 0) {
     throw new Error('dsh-codebuddy-models: streamIdleTimeoutMs must be a positive finite number')
@@ -115,7 +115,11 @@ function resolveAdapterOptions(config: Config) {
     throw new Error('dsh-codebuddy-models: defaultContextWindow must be a positive integer')
   }
   return {
-    baseURL: config.baseURL ?? PUBLIC_BASE_URL,
+    // Empty/whitespace baseURL falls back to the public endpoint (an empty
+    // string would otherwise yield a relative request path that fetch rejects).
+    baseURL: typeof config.baseURL === 'string' && config.baseURL.trim().length > 0
+      ? config.baseURL.trim()
+      : PUBLIC_BASE_URL,
     maxTokens,
     defaultContextWindow,
     models: resolveModels(config.models),

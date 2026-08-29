@@ -172,6 +172,12 @@ function CodeBuddySettingsPage(props) {
       streamIdleTimeoutMs: form.streamIdleTimeoutMs,
       models,
     }
+    // An empty baseURL means "use the default endpoint"; do not persist an
+    // empty string (an empty baseURL would yield a relative request URL).
+    if (typeof form.baseURL === 'string' && form.baseURL.trim() === '') {
+      try { scope.unset('baseURL') } catch { /* not set */ }
+      delete patch.baseURL
+    }
     applyScope(scope, patch).then(() => { setSaved(true); setError(undefined) }).catch(() => { setSaved(false); setError('保存失败，请重试。') })
   }
 

@@ -89,10 +89,13 @@ dsh web 的设置页会多出一个「**CodeBuddy 模型**」区块（本包的 
 
 ```yaml
 llm-codebuddy:
-  baseURL: https://copilot.tencent.com   # 后端 origin，会拼接 /v2/chat/completions
+  baseURL: https://copilot.tencent.com   # 后端 origin，会拼接 /v2/chat/completions；留空/省略则用此默认值
   defaultContextWindow: 1000000
   maxTokens: 64000
   streamIdleTimeoutMs: 300000
+```
+
+> **注意**：`baseURL` 留空（空字符串）等价于省略，会回退到默认端点 `https://copilot.tencent.com`。不要把企业模型列表里的 `serviceEndpoint`（`https://copilot.tencent.com/v2/openapi/chat/completions`）当作 `baseURL`——那个端点是 OpenAPI 专用（需专门 key），桌面端登录态无法直连，会返回 `11101 unauthorized: request is not from an OpenAPI client`。
   models:
     - id: auto                       # 回退目录：默认仅 auto；可自行添加其它模型 ID
   retryPolicy:
