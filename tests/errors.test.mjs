@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { classifyHttpError } from '../lib/adapter.js'
-import { classifyCode } from '../lib/sse.js'
+import { classifyCode, isContextOverflowText } from '../lib/sse.js'
 
 test('classifyCode maps enterprise quota (14012) to QUOTA', () => {
   assert.equal(classifyCode(14012), 'QUOTA')
@@ -17,6 +17,64 @@ test('classifyCode maps model-not-allowed (11136) to MODEL_NOT_ALLOWED', () => {
 test('classifyCode returns undefined for unknown codes', () => {
   assert.equal(classifyCode(12345), undefined)
   assert.equal(classifyCode(undefined), undefined)
+})
+
+test('isContextOverflowText recognizes provider overflow wording', () => {
+  for (const text of [
+    'This model\'s maximum context length is 168000 tokens. However, you requested 170000 tokens (170000 in the messages, 0 in the completion).',
+    'context length exceeded',
+    'request too long for context window',
+    'input is too long for this model',
+    'prompt exceeds the model context window',
+    '上下文长度超出限制',
+    '请求超出上下文窗口限制',
+  ]) {
+    assert.ok(isContextOverflowText(text), `should detect: ${text}`)
+  }
+  for (const text of [
+    'rate limit exceeded',
+    'quota exhausted',
+    'model not allowed by policy',
+    'server error',
+  ]) {
+    assert.ok(!isContextOverflowText(text), `should NOT detect: ${text}`)
+  }
+})
+
+test('classifyCode maps context-overflow wording to CONTEXT_WINDOW_EXCEEDED', () => {
+  assert.equal(
+    classifyCode(undefined, undefined, "This model's maximum context length is 168000 tokens."),
+    'CONTEXT_WINDOW_EXCEEDED',
+  )
+  assert.equal(classifyCode(400, undefined, 'context length exceeded'), 'CONTEXT_WINDOW_EXCEEDED')
+  // unknown code with no overflow wording still returns undefined
+  assert.equal(classifyCode(400, undefined, 'generic error'), undefined)
+})
+
+test('classifyHttpError maps context-overflow body to CONTEXT_WINDOW_EXCEEDED', () => {
+  const raw = JSON.stringify({
+    code: 400,
+    msg: "This model's maximum context length is 168000 tokens. However, you requested 170000 tokens.",
+    requestId: 'req-1',
+  })
+  const classified = classifyHttpError(400, raw)
+  assert.equal(classified.code, 'CONTEXT_WINDOW_EXCEEDED')
+  assert.match(classified.message, /maximum context length/)
+  assert.equal(classified.requestId, 'req-1')
+})
+
+test('classifyHttpError maps nested overflow error to CONTEXT_WINDOW_EXCEEDED', () => {
+  const raw = JSON.stringify({
+    error: { code: 400, msg: 'request too long for context window', requestId: 'req-2' },
+  })
+  const classified = classifyHttpError(400, raw)
+  assert.equal(classified.code, 'CONTEXT_WINDOW_EXCEEDED')
+  assert.equal(classified.requestId, 'req-2')
+})
+
+test('classifyHttpError maps Chinese overflow message to CONTEXT_WINDOW_EXCEEDED', () => {
+  const classified = classifyHttpError(400, JSON.stringify({ code: 400, msg: '上下文长度超出限制' }))
+  assert.equal(classified.code, 'CONTEXT_WINDOW_EXCEEDED')
 })
 
 test('classifyHttpError maps nested enterprise quota error (14012) to QUOTA with message and requestId', () => {

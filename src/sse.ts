@@ -71,6 +71,8 @@ export interface WireChunk {
  */
 export const CODEBUDDY_ENTERPRISE_QUOTA_CODE = 14012
 export const CODEBUDDY_MODEL_NOT_ALLOWED_CODE = 11136
+/** The harness canonical code for a request that exceeded the model context window. */
+export const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
 
 /**
  * Classify a CodeBuddy business error code onto a stable harness LlmError
@@ -79,11 +81,14 @@ export const CODEBUDDY_MODEL_NOT_ALLOWED_CODE = 11136
  * will not retry them and will surface the failure to the user directly.
  * @param code - the provider business error code, when present.
  * @param type - the provider error type tag, when present (e.g. PI_AL_ERROR).
+ * @param message - the provider message text, used to recognize context-window
+ *   overflow (CodeBuddy has no single stable overflow code; the wording does).
  * @returns the stable LlmError code, or `undefined` to use HTTP-status mapping.
  */
-export function classifyCode(code: number | undefined, type?: string): string | undefined {
+export function classifyCode(code: number | undefined, type?: string, message?: string): string | undefined {
   if (code === CODEBUDDY_ENTERPRISE_QUOTA_CODE || type === 'PI_AL_ERROR') return 'QUOTA'
   if (code === CODEBUDDY_MODEL_NOT_ALLOWED_CODE) return 'MODEL_NOT_ALLOWED'
+  if (message !== undefined && isContextOverflowText(message)) return CONTEXT_WINDOW_EXCEEDED_CODE
   return undefined
 }
 
@@ -91,6 +96,29 @@ export function classifyCode(code: number | undefined, type?: string): string | 
 export const ENTERPRISE_QUOTA_MESSAGE = '已达到企业为您设置的额度上限，如需调整额度，请联系企业管理员。'
 /** User-facing message for a model outside the subscription. */
 export const MODEL_NOT_ALLOWED_MESSAGE = '您暂无该模型的使用权限，请联系管理员。'
+
+/**
+ * Recognize provider wording for a request that exceeded the model context
+ * window. CodeBuddy reports this both as an HTTP error body (`code`/`msg`) and
+ * as an in-band SSE error block; the exact business code varies by model and
+ * deployment, so the classifier keys on the message wording, mirroring the
+ * harness's own `isContextWindowExceededError` patterns ("context length
+ * exceeded", "too long for context", "maximum context length", ...).
+ * @param text - the provider message/type text to test.
+ * @returns true when the text identifies a context-window overflow.
+ */
+export function isContextOverflowText(text: string): boolean {
+  if (text.length === 0) return false
+  return (
+    /(?:^|[^a-z0-9])context[\s_-](?:length|window)[\s_-](?:exceed(?:ed|s)?|overflow(?:ed)?|limit[\s_-]exceeded)(?:$|[^a-z0-9])/i.test(text) ||
+    /\b(?:maximum|max)(?:\s+(?:allowed|supported))?\s+context\s+(?:length|window)\b/i.test(text) ||
+    /\b(?:request|prompt|input|messages?)\s+(?:is\s+|are\s+)?too\s+(?:large|long)\s+for\s+(?:(?:this|the)\s+)?(?:model(?:'s)?\s+)?context(?:\s+window)?\b/i.test(text) ||
+    /\b(?:input|prompt|request)\s+(?:is\s+)?too\s+(?:long|large)\s+for\s+(?:this|the)\s+model\b/i.test(text) ||
+    /\b(?:exceed(?:ed|s)?|overflow(?:ed|s)?)\s+the\s+(?:model(?:'s)?\s+)?context(?:\s+(?:length|window))?\b/i.test(text) ||
+    /上下文(?:长度|窗口|超长|溢出)/.test(text) ||
+    /超出(?:了)?(?:模型|上下文)(?:的)?(?:上下文)?(?:长度|窗口|限制)/.test(text)
+  )
+}
 
 
 /**
@@ -251,11 +279,11 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
 
     // In-band error: the backend may abort the stream with an error object
     // instead of emitting `[DONE]`. Surface it with a stable code so the
-    // harness reports the real failure (e.g. enterprise quota) instead of a
-    // generic STREAM_CLOSED.
+    // harness reports the real failure (e.g. enterprise quota, context
+    // overflow) instead of a generic STREAM_CLOSED.
     if (chunk.error !== undefined) {
-      const stable = classifyCode(chunk.error.code, chunk.error.type)
       const rawMessage = chunk.error.msg ?? chunk.error.message
+      const stable = classifyCode(chunk.error.code, chunk.error.type, rawMessage)
       let message = rawMessage
       let code = stable
       if (code === 'QUOTA' && message === undefined) message = ENTERPRISE_QUOTA_MESSAGE

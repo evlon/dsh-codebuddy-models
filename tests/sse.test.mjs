@@ -172,6 +172,20 @@ test('translate surfaces an in-band model-not-allowed error (11136)', async () =
   )
 })
 
+test('translate surfaces an in-band context-overflow error as CONTEXT_WINDOW_EXCEEDED', async () => {
+  const payloads = [
+    JSON.stringify({ error: { code: 400, msg: "This model's maximum context length is 168000 tokens. However, you requested 170000 tokens.", requestId: 'r-overflow' } }),
+  ]
+  await assert.rejects(
+    () => collect(translate(payloads)),
+    (error) => {
+      assert.equal(error.code, 'CONTEXT_WINDOW_EXCEEDED')
+      assert.match(error.message, /maximum context length/)
+      return true
+    },
+  )
+})
+
 test('translate turns a truncated tool-call arguments stream into MALFORMED_TOOL_ARGS', async () => {
   // Backend cuts the model's arguments mid-string, then finishes the stream.
   const payloads = [

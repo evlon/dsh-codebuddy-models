@@ -237,6 +237,7 @@ export function classifyHttpError(status: number, raw: string): ClassifiedHttpEr
   let parsed: {
     code?: number
     msg?: string
+    requestId?: string
     displayMsg?: { zh?: string }
     error?: { code?: number; msg?: string; message?: string; type?: string; requestId?: string }
   }
@@ -247,8 +248,8 @@ export function classifyHttpError(status: number, raw: string): ClassifiedHttpEr
   }
   const code = parsed.code ?? parsed.error?.code
   const rawMessage = parsed.msg ?? parsed.error?.msg ?? parsed.error?.message
-  const requestId = parsed.error?.requestId
-  const stable = classifyCode(code, parsed.error?.type)
+  const requestId = parsed.requestId ?? parsed.error?.requestId
+  const stable = classifyCode(code, parsed.error?.type, rawMessage)
   if (stable === 'QUOTA') {
     return { code: stable, message: rawMessage ?? ENTERPRISE_QUOTA_MESSAGE, ...(requestId ? { requestId } : {}) }
   }
@@ -258,6 +259,11 @@ export function classifyHttpError(status: number, raw: string): ClassifiedHttpEr
       message: parsed.displayMsg?.zh ?? rawMessage ?? MODEL_NOT_ALLOWED_MESSAGE,
       ...(requestId ? { requestId } : {}),
     }
+  }
+  if (stable === 'CONTEXT_WINDOW_EXCEEDED') {
+    // Keep the provider's own wording (it usually names the actual limit); the
+    // harness routes the code to its context-overflow recovery path.
+    return { code: stable, message: rawMessage ?? 'CodeBuddy request exceeded the model context window', ...(requestId ? { requestId } : {}) }
   }
   return { code: fallback, message: rawMessage ?? fallbackMessage, ...(requestId ? { requestId } : {}) }
 }
@@ -324,18 +330,45 @@ export class CodeBuddyAdapter extends LlmAdapter {
     return enabled.map((entry) => enterpriseModelInfo(provider, entry))
   }
 
-  resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+  async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     const connection = this.config.options()
     const configured = connection.models.find((entry) => entry.id === model)
+    const enterprise = await this.findEnterpriseModel(model)
+    // Live enterprise capacity wins over the static fallback catalog: the
+    // directory carries the subscription's real input/output grants, and
+    // exposing them here is what lets the harness compaction engine compute a
+    // sane pressure threshold instead of assuming the 1M default.
+    if (enterprise !== undefined) {
+      return {
+        provider,
+        id: model,
+        name: enterprise.name ?? model,
+        ...(enterprise.descriptionZh !== undefined && enterprise.descriptionZh.length > 0
+          ? { description: enterprise.descriptionZh }
+          : {}),
+        inputModalities: ['text'] as const,
+        reasoning: REASONING,
+        context: { contextWindow: enterprise.maxInputTokens },
+        defaultMaxTokens: enterprise.maxOutputTokens,
+      }
+    }
     const info = configured === undefined
       ? { provider, id: model, name: model, inputModalities: ['text'] as const }
       : modelInfo(provider, configured)
-    return Promise.resolve({
+    return {
       ...info,
       reasoning: REASONING,
       context: { contextWindow: configured?.contextWindow ?? connection.defaultContextWindow },
       defaultMaxTokens: configured?.maxTokens ?? connection.maxTokens,
-    })
+    }
+  }
+
+  /** Resolve one live enterprise directory entry, or undefined when unavailable. */
+  private async findEnterpriseModel(model: string): Promise<import('./credentials.js').CodeBuddyEnterpriseModel | undefined> {
+    if (this.config.resolveDirectory === undefined) return undefined
+    const directory = await this.config.resolveDirectory().catch(() => undefined)
+    if (directory === undefined) return undefined
+    return directory.find((entry) => entry.id === model && entry.status === 'enabled')
   }
 
   prepareCall(provider: string, model: string): Promise<PreparedAdapterCall> {

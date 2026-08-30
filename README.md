@@ -107,7 +107,9 @@ llm-codebuddy:
 
 模型目录**自动从企业内置模型接口获取**（`www.codebuddy.cn/console/enterprises/{enterpriseId}/builtin-models`，用桌面端登录态鉴权，10 分钟缓存）：企业账号能看到并启用的模型会自动出现在选择器里，无需维护硬编码列表。**该目录只在运行时获取、不写入 `settings.yaml`**，因此不会污染用户配置；设置页的「CodeBuddy 模型」区块通过 LLM 模型 API **只读展示**这份实时目录。
 
-内置静态目录刻意保持最小（**只有 `auto`**）——`auto` 是唯一几乎必然长期有效的模型；其它模型 ID 仍可直接输入使用（适配器对任意 ID 宽容）。获取失败（未登录 / 非企业账号 / 网络异常）时回退到这份静态目录；此时也可在设置页的「高级：回退模型目录」里手动维护一份目录。
+目录里的容量字段会被映射成 harness 的模型能力并暴露给**自动上下文压缩**（`dsh-compaction-basic`）：`maxInputTokens → contextWindow`、`maxOutputTokens → defaultMaxTokens`。这样压缩器按每个模型的真实上下文窗口计算压力阈值（默认 80%），而不是统一按 100 万 —— 例如 `auto` 的输入容量 168K，压力阈值约为 13.4 万 token，上下文接近用完时就会自动压缩，避免溢出。（在 v0.1.5 及之前，企业模型一律回落到默认 100 万，压缩几乎永远不触发。）
+
+内置静态目录刻意保持最小（**只有 `auto`**）——`auto` 是唯一几乎必然长期有效的模型；其它模型 ID 仍可直接输入使用（适配器对任意 ID 宽容）。获取失败（未登录 / 非企业账号 / 网络异常）时回退到这份静态目录；此时也可在设置页的「高级：回退模型目录」里手动维护一份目录（为回退模型填上 `contextWindow`/`maxTokens` 同样能让压缩器按真实容量工作）。
 
 具体账号能用哪些模型由**订阅策略**决定。某模型无权限时后端返回 `11136 / model not allowed by policy`，插件会映射为 `MODEL_NOT_ALLOWED` 错误并给出可读提示（"您暂无该模型的使用权限，请联系管理员。"）。
 
@@ -127,6 +129,7 @@ CodeBuddy 后端的工具调用流式返回有一个特点：真实工具名只�
 - **token 过期**：自动刷新；刷新失败给出明确 `AUTH` 错误。
 - **企业额度上限（`14012`）**：映射为 harness 规范的 `QUOTA` 错误，**不重试**，直接把「已达到企业为您设置的额度上限，如需调整额度，请联系企业管理员。」提示给用户（HTTP 错误体和流内错误块都会处理）。
 - **模型无权限（`11136`）**：映射为 `MODEL_NOT_ALLOWED`，不重试，给出可读提示。
+- **上下文溢出**：后端返回 "context length exceeded / too long" 之类错误时（HTTP 错误体或流内错误块），映射为 harness 规范的 `CONTEXT_WINDOW_EXCEEDED`。dsh 的自动压缩恢复（`dsh-compaction-basic` 的 `agent/request-error` 监听）会据此先压缩历史再重试一次，而不是直接把溢出错误抛给用户。
 - 需要本机已登录 CodeBuddy / WorkBuddy 桌面端。
 
 ## 发布到 npm
