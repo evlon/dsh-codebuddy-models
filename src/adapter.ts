@@ -240,6 +240,7 @@ export function classifyHttpError(status: number, raw: string): ClassifiedHttpEr
     requestId?: string
     displayMsg?: { zh?: string }
     error?: { code?: number; msg?: string; message?: string; type?: string; requestId?: string }
+    extError?: { code?: string; message?: string; type?: string }
   }
   try {
     parsed = JSON.parse(raw) as typeof parsed
@@ -247,9 +248,10 @@ export function classifyHttpError(status: number, raw: string): ClassifiedHttpEr
     return { code: fallback, message: raw.slice(0, 300) || fallbackMessage }
   }
   const code = parsed.code ?? parsed.error?.code
-  const rawMessage = parsed.msg ?? parsed.error?.msg ?? parsed.error?.message
+  const rawMessage = parsed.msg ?? parsed.error?.msg ?? parsed.error?.message ?? parsed.extError?.message
   const requestId = parsed.requestId ?? parsed.error?.requestId
-  const stable = classifyCode(code, parsed.error?.type, rawMessage)
+  const type = parsed.error?.type ?? parsed.extError?.type ?? parsed.extError?.code
+  const stable = classifyCode(code, type, rawMessage)
   if (stable === 'QUOTA') {
     return { code: stable, message: rawMessage ?? ENTERPRISE_QUOTA_MESSAGE, ...(requestId ? { requestId } : {}) }
   }
@@ -257,6 +259,16 @@ export function classifyHttpError(status: number, raw: string): ClassifiedHttpEr
     return {
       code: stable,
       message: parsed.displayMsg?.zh ?? rawMessage ?? MODEL_NOT_ALLOWED_MESSAGE,
+      ...(requestId ? { requestId } : {}),
+    }
+  }
+  if (stable === 'TOOL_SEQUENCE_BROKEN') {
+    // The conversation history carries an unpaired tool call/result; the
+    // backend refuses the request until the history is repaired. Surface a
+    // clear hint with the provider's own wording (the harness will not retry).
+    return {
+      code: stable,
+      message: parsed.displayMsg?.zh ?? rawMessage ?? '工具调用记录不完整，请重新发起对话。',
       ...(requestId ? { requestId } : {}),
     }
   }

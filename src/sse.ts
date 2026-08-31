@@ -62,6 +62,7 @@ export interface WireChunk {
     msg?: string
     message?: string
     type?: string
+    extError?: { code?: string; message?: string; type?: string }
   }
 }
 
@@ -71,8 +72,12 @@ export interface WireChunk {
  */
 export const CODEBUDDY_ENTERPRISE_QUOTA_CODE = 14012
 export const CODEBUDDY_MODEL_NOT_ALLOWED_CODE = 11136
+/** CodeBuddy rejects a request whose tool-call history is incomplete/mismatched. */
+export const CODEBUDDY_TOOL_SEQUENCE_BROKEN_CODE = 11148
 /** The harness canonical code for a request that exceeded the model context window. */
 export const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
+/** Stable code for a broken tool-call/result sequence (CodeBuddy 11148). */
+export const TOOL_SEQUENCE_BROKEN_CODE = 'TOOL_SEQUENCE_BROKEN'
 
 /**
  * Classify a CodeBuddy business error code onto a stable harness LlmError
@@ -88,6 +93,7 @@ export const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
 export function classifyCode(code: number | undefined, type?: string, message?: string): string | undefined {
   if (code === CODEBUDDY_ENTERPRISE_QUOTA_CODE || type === 'PI_AL_ERROR') return 'QUOTA'
   if (code === CODEBUDDY_MODEL_NOT_ALLOWED_CODE) return 'MODEL_NOT_ALLOWED'
+  if (code === CODEBUDDY_TOOL_SEQUENCE_BROKEN_CODE || type === 'tool_call_sequence_broken') return TOOL_SEQUENCE_BROKEN_CODE
   if (message !== undefined && isContextOverflowText(message)) return CONTEXT_WINDOW_EXCEEDED_CODE
   return undefined
 }
@@ -282,8 +288,9 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
     // harness reports the real failure (e.g. enterprise quota, context
     // overflow) instead of a generic STREAM_CLOSED.
     if (chunk.error !== undefined) {
-      const rawMessage = chunk.error.msg ?? chunk.error.message
-      const stable = classifyCode(chunk.error.code, chunk.error.type, rawMessage)
+      const rawMessage = chunk.error.msg ?? chunk.error.message ?? chunk.error.extError?.message
+      const type = chunk.error.type ?? chunk.error.extError?.type ?? chunk.error.extError?.code
+      const stable = classifyCode(chunk.error.code, type, rawMessage)
       let message = rawMessage
       let code = stable
       if (code === 'QUOTA' && message === undefined) message = ENTERPRISE_QUOTA_MESSAGE

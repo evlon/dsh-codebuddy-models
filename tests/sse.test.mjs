@@ -186,6 +186,19 @@ test('translate surfaces an in-band context-overflow error as CONTEXT_WINDOW_EXC
   )
 })
 
+test('translate surfaces an in-band tool-sequence-broken error (11148)', async () => {
+  const payloads = [
+    JSON.stringify({ error: { code: 11148, msg: 'tool calls and tool results do not match, please start a new conversation and retry', extError: { code: 'tool_call_sequence_broken', type: 'invalid_request_error' } } }),
+  ]
+  await assert.rejects(
+    () => collect(translate(payloads)),
+    (error) => {
+      assert.equal(error.code, 'TOOL_SEQUENCE_BROKEN')
+      return true
+    },
+  )
+})
+
 test('translate turns a truncated tool-call arguments stream into MALFORMED_TOOL_ARGS', async () => {
   // Backend cuts the model's arguments mid-string, then finishes the stream.
   const payloads = [

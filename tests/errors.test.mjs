@@ -14,6 +14,13 @@ test('classifyCode maps model-not-allowed (11136) to MODEL_NOT_ALLOWED', () => {
   assert.equal(classifyCode(11136), 'MODEL_NOT_ALLOWED')
 })
 
+test('classifyCode maps tool-sequence-broken (11148) to TOOL_SEQUENCE_BROKEN', () => {
+  assert.equal(classifyCode(11148), 'TOOL_SEQUENCE_BROKEN')
+  // extError.type / extError.code fallback even when the numeric code is absent
+  assert.equal(classifyCode(undefined, 'tool_call_sequence_broken'), 'TOOL_SEQUENCE_BROKEN')
+  assert.equal(classifyCode(undefined, undefined, 'tool calls and tool results do not match'), undefined)
+})
+
 test('classifyCode returns undefined for unknown codes', () => {
   assert.equal(classifyCode(12345), undefined)
   assert.equal(classifyCode(undefined), undefined)
@@ -107,6 +114,26 @@ test('classifyHttpError keeps MODEL_NOT_ALLOWED behavior for 11136 with displayM
   const classified = classifyHttpError(403, raw)
   assert.equal(classified.code, 'MODEL_NOT_ALLOWED')
   assert.equal(classified.message, '您暂无该模型的使用权限，请联系管理员。')
+})
+
+test('classifyHttpError maps the real 11148 tool-sequence response to TOOL_SEQUENCE_BROKEN', () => {
+  const raw = JSON.stringify({
+    code: 11148,
+    msg: 'tool calls and tool results do not match, please start a new conversation and retry',
+    requestId: '0a7fc9bd-a7b5-4f7a-a14f-f6a10dd31942',
+    extError: {
+      code: 'tool_call_sequence_broken',
+      message: 'tool calls and tool results do not match, please start a new conversation and retry',
+      param: '',
+      type: 'invalid_request_error',
+      StatusCode: 400,
+    },
+    displayMsg: { zh: '工具调用记录不完整，请重新发起对话。' },
+  })
+  const classified = classifyHttpError(400, raw)
+  assert.equal(classified.code, 'TOOL_SEQUENCE_BROKEN')
+  assert.equal(classified.message, '工具调用记录不完整，请重新发起对话。')
+  assert.equal(classified.requestId, '0a7fc9bd-a7b5-4f7a-a14f-f6a10dd31942')
 })
 
 test('classifyHttpError falls back to HTTP-status code when the error is unrecognized', () => {
