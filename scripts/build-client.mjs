@@ -19,7 +19,7 @@
  * A `node --check` syntax gate runs after bundling: a syntax error here would
  * make dsh web report "loaded without registering" and refuse the plugin.
  */
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,6 +28,10 @@ import { build } from 'esbuild'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const entry = join(root, 'src', 'client-main.js')
 const dest = join(root, 'lib', 'client.js')
+
+// Version stamped from package.json so the settings page can show it without
+// the browser half reading the filesystem. Inlined at build time as a literal.
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 
 const BANNER = `window.__ModuleLoader__.load({
   id: "dsh-codebuddy-models",
@@ -52,6 +56,9 @@ const result = await build({
   minify: false,
   sourcemap: false,
   logLevel: 'error',
+  define: {
+    __PLUGIN_VERSION__: JSON.stringify(pkg.version),
+  },
 })
 
 if (result.outputFiles.length === 0) {

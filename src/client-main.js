@@ -27,6 +27,13 @@ export const inject = ['slots', 'settingsScope', 'connection', 'locale']
 /** Settings namespace (matches the host half's `settingsNamespace`). */
 const NS = 'llm-codebuddy'
 
+/**
+ * Plugin version, stamped at build time by `scripts/build-client.mjs` from
+ * package.json (esbuild `define`). The browser half cannot read package.json,
+ * so the constant falls back to 'dev' when a build forgot to inject it.
+ */
+const PLUGIN_VERSION = typeof __PLUGIN_VERSION__ === 'string' ? __PLUGIN_VERSION__ : 'dev'
+
 const FIELD_STYLE = { display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px', maxWidth: '560px' }
 const LABEL_STYLE = { fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
 const INPUT_STYLE = {
@@ -212,7 +219,20 @@ function CodeBuddySettingsPage(props) {
   const liveUsable = Array.isArray(liveList) && liveList.length > 0
 
   return React.createElement('div', null,
-    React.createElement('h3', { style: { margin: '0 0 4px', color: 'var(--dsw-alias-label-primary)' } }, 'CodeBuddy 模型'),
+    React.createElement('div', { style: Object.assign({}, ROW_STYLE, { marginBottom: '4px', gap: '10px' }) },
+      React.createElement('h3', { style: { margin: '0', color: 'var(--dsw-alias-label-primary)' } }, 'CodeBuddy 模型'),
+      React.createElement('span', {
+        style: {
+          fontSize: '11px',
+          padding: '1px 7px',
+          borderRadius: '999px',
+          border: '1px solid var(--dsw-alias-border-l1)',
+          background: 'var(--dsw-alias-bg-layer-1)',
+          color: 'var(--dsw-alias-label-secondary)',
+          lineHeight: '16px',
+          whiteSpace: 'nowrap',
+        },
+      }, 'v' + PLUGIN_VERSION)),
     React.createElement('p', { style: HINT_STYLE },
       '模型目录自动从你的 CodeBuddy 企业账号获取（仅企业账号可用，启动时获取、不保存）。此处可调整请求参数；保存后即时生效（live）。'),
     React.createElement(TextField, {
