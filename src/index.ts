@@ -18,23 +18,25 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 import { LlmError, RetryPolicySchema, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
-import { deepEqualJson, settingsNamespace } from '@deepseek-ai/dsh-settings'
 
 import { CodeBuddyAdapter, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DEFAULT_STREAM_IDLE_TIMEOUT_MS, DEFAULT_MODELS } from './adapter.js'
 import type { CodeBuddyCatalogModel } from './adapter.js'
-import { CredentialManager, EnterpriseModelDirectory, findAuthFile } from './credentials.js'
+import { CredentialManager, findAuthFile } from './credentials.js'
+import { OfficialCatalogReader } from './product-catalog.js'
 
 export * from './adapter.js'
 export * from './credentials.js'
+export * from './product-catalog.js'
 export * from './sse.js'
 
 export const name = 'llm-codebuddy'
 /** The LLM registry is the only hard dependency. */
 export const inject = ['llm']
 
-const NS = settingsNamespace('llm-codebuddy')
+const NS = 'llm-codebuddy'
 /** The single provider route this plugin owns. */
 const PROVIDER = 'codebuddy'
 
@@ -128,6 +130,11 @@ export function resolveAdapterOptions(config: Config) {
   }
 }
 
+/** JSON-stable deep equality for two resolved retry-policy snapshots (plain JSON data). */
+function deepEqualJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
 export function apply(ctx: Context, config: Config): void {
   let current = (): Config => config
   let lastRaw: Config | undefined
@@ -150,7 +157,7 @@ export function apply(ctx: Context, config: Config): void {
     )
   }
   let manager: CredentialManager | undefined = authFile === undefined ? undefined : new CredentialManager(authFile)
-  let directory: EnterpriseModelDirectory | undefined = manager === undefined ? undefined : new EnterpriseModelDirectory(manager)
+  let catalog: OfficialCatalogReader | undefined
 
   const adapter = new CodeBuddyAdapter({
     options,
@@ -167,13 +174,9 @@ export function apply(ctx: Context, config: Config): void {
       }
       return manager.getHeaders()
     },
-    resolveDirectory: async () => {
-      if (directory === undefined) {
-        const file = findAuthFile()
-        if (file === undefined) return undefined
-        directory = new EnterpriseModelDirectory(new CredentialManager(file))
-      }
-      return directory.read()
+    resolveCatalog: async () => {
+      if (catalog === undefined) catalog = new OfficialCatalogReader()
+      return (await catalog.read())?.models
     },
   })
 
@@ -195,26 +198,16 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   // Settings: register the `llm-codebuddy` namespace (live) and wire the
-  // config source so edits re-resolve the adapter facts. The enterprise model
-  // directory is NOT persisted here — it is fetched on demand by the adapter
-  // (`listModels`) and read by the settings UI through the LLM model API, so
-  // nothing runtime-derived is written to settings.yaml.
+  // config source so edits re-resolve the adapter facts. The official model
+  // catalog is scanned from the local client's product.json by the adapter
+  // (`resolveCatalog`) and is NOT persisted here — the namespace only carries
+  // the hand-configured fallback catalog plus request parameters.
   ctx.inject(['settings'], (sctx) => {
-    const settings = sctx.settings as {
-      register(
-        ns: string,
-        schema: unknown,
-        options?: { applies?: string; base?: unknown },
-      ): {
-        get(): unknown
-        watch(cb: (next: unknown) => void): () => void
-        update(patch: object): Promise<void>
-      }
-    }
+    const settings = sctx.settings as SettingsProvider
     const scope = settings.register(NS, Config, { applies: 'live', base: config })
     const applyUser = (): void => {
       // `scope.get()` is the resolved value (base + defaults + user layer).
-      current = () => scope.get() as Config
+      current = () => scope.get()
     }
     applyUser()
     const unsub = scope.watch(() => applyUser())

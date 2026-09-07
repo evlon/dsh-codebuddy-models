@@ -139,7 +139,20 @@ test('classifyHttpError maps the real 11148 tool-sequence response to TOOL_SEQUE
 test('classifyHttpError falls back to HTTP-status code when the error is unrecognized', () => {
   const classified = classifyHttpError(429, JSON.stringify({ error: { code: 9999, msg: 'transient' } }))
   assert.equal(classified.code, 'RATE_LIMIT')
-  assert.equal(classified.message, 'transient')
+  assert.equal(classified.message, 'transient (CodeBuddy 9999)')
+})
+
+test('classifyHttpError surfaces the security-policy display for 11128', () => {
+  const raw = JSON.stringify({
+    code: 11128,
+    msg: 'request illegal',
+    requestId: 'pol-1',
+    displayMsg: { zh: '请求被安全策略拦截，请稍后重试或联系支持。' },
+  })
+  const classified = classifyHttpError(400, raw)
+  assert.equal(classified.code, 'INVALID_REQUEST')
+  assert.equal(classified.message, '请求被安全策略拦截，请稍后重试或联系支持。')
+  assert.equal(classified.requestId, 'pol-1')
 })
 
 test('classifyHttpError uses the default quota message when the body lacks one', () => {

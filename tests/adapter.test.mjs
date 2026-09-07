@@ -3,7 +3,7 @@ import test from 'node:test'
 import { CodeBuddyAdapter, DEFAULT_MODELS } from '../lib/adapter.js'
 
 /** Minimal options thunk like the registering plugin provides. */
-function makeAdapter(resolveDirectory) {
+function makeAdapter(resolveCatalog) {
   return new CodeBuddyAdapter({
     options: () => ({
       baseURL: 'https://copilot.tencent.com',
@@ -23,7 +23,7 @@ function makeAdapter(resolveDirectory) {
       'content-type': 'application/json',
       accept: 'text/event-stream',
     }),
-    resolveDirectory,
+    resolveCatalog,
   })
 }
 
@@ -31,6 +31,30 @@ test('listModels returns the configured catalog ids', async () => {
   const adapter = makeAdapter()
   const models = await adapter.listModels('codebuddy')
   assert.deepEqual(models.map((m) => m.id), DEFAULT_MODELS.map((m) => m.id))
+})
+
+test('listModels prefers the official catalog and maps descriptions and modalities', async () => {
+  const adapter = makeAdapter(async () => [
+    { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', maxInputTokens: 1_000_000, maxOutputTokens: 128_000, descriptionZh: '适合日常使用' },
+    { id: 'default-1.2', name: 'default-1.2', maxInputTokens: 200_000, maxOutputTokens: 24_000, supportsImages: true },
+  ])
+  const models = await adapter.listModels('codebuddy')
+  assert.deepEqual(models.map((m) => m.id), ['deepseek-v4-flash', 'default-1.2'])
+  assert.equal(models[0].description, '适合日常使用')
+  assert.deepEqual(models[1].inputModalities, ['text', 'image'])
+})
+
+test('listModels falls back to the static catalog when no official catalog is available', async () => {
+  const adapter = makeAdapter(async () => undefined)
+  const models = await adapter.listModels('codebuddy')
+  assert.equal(models.length, DEFAULT_MODELS.length)
+  assert.deepEqual(models.map((m) => m.id), DEFAULT_MODELS.map((m) => m.id))
+})
+
+test('listModels falls back when the official catalog scan rejects', async () => {
+  const adapter = makeAdapter(async () => { throw new Error('scan failed') })
+  const models = await adapter.listModels('codebuddy')
+  assert.equal(models.length, DEFAULT_MODELS.length)
 })
 
 test('resolveModel advertises reasoning support (default effort high)', async () => {
@@ -57,9 +81,9 @@ test('resolveModel accepts arbitrary model ids (returns generic info)', async ()
   assert.ok(resolved.reasoning)
 })
 
-test('resolveModel prefers live enterprise capacities over the static fallback', async () => {
+test('resolveModel prefers official catalog capacities over the fallback', async () => {
   const adapter = makeAdapter(async () => [
-    { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', maxInputTokens: 168000, maxOutputTokens: 32000, supportsToolCall: true, supportsImages: false, status: 'enabled' },
+    { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', maxInputTokens: 168000, maxOutputTokens: 32000 },
   ])
   const resolved = await adapter.resolveModel('codebuddy', 'deepseek-v4-flash')
   assert.equal(resolved.context.contextWindow, 168000)
@@ -67,25 +91,17 @@ test('resolveModel prefers live enterprise capacities over the static fallback',
   assert.equal(resolved.name, 'DeepSeek V4 Flash')
 })
 
-test('resolveModel falls back to the default context window when the directory lacks the model', async () => {
+test('resolveModel falls back to the default context window when the official catalog lacks the model', async () => {
   const adapter = makeAdapter(async () => [
-    { id: 'some-other', name: 'Other', maxInputTokens: 50000, maxOutputTokens: 5000, supportsToolCall: true, supportsImages: false, status: 'enabled' },
+    { id: 'some-other', name: 'Other', maxInputTokens: 50000, maxOutputTokens: 5000 },
   ])
   const resolved = await adapter.resolveModel('codebuddy', 'deepseek-v4-flash')
   assert.equal(resolved.context.contextWindow, 1_000_000)
   assert.equal(resolved.defaultMaxTokens, 64000)
 })
 
-test('resolveModel ignores disabled enterprise models', async () => {
-  const adapter = makeAdapter(async () => [
-    { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', maxInputTokens: 168000, maxOutputTokens: 32000, supportsToolCall: true, supportsImages: false, status: 'disabled' },
-  ])
-  const resolved = await adapter.resolveModel('codebuddy', 'deepseek-v4-flash')
-  assert.equal(resolved.context.contextWindow, 1_000_000)
-})
-
-test('resolveModel falls back gracefully when the directory rejects', async () => {
-  const adapter = makeAdapter(async () => { throw new Error('network down') })
+test('resolveModel falls back gracefully when the official catalog scan rejects', async () => {
+  const adapter = makeAdapter(async () => { throw new Error('scan failed') })
   const resolved = await adapter.resolveModel('codebuddy', 'deepseek-v4-flash')
   assert.equal(resolved.context.contextWindow, 1_000_000)
   assert.equal(resolved.defaultMaxTokens, 64000)

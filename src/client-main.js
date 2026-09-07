@@ -22,7 +22,7 @@ import React from 'react'
 import { FORM_DEFAULTS, mergeFormSection, normalizeModels, validateModels } from './client-schema.js'
 
 /** Required services (cordis fiber inject). */
-export const inject = ['slots', 'settingsScope', 'connection', 'locale']
+export const inject = ['slots', 'settingsScope', 'locale']
 
 /** Settings namespace (matches the host half's `settingsNamespace`). */
 const NS = 'llm-codebuddy'
@@ -128,8 +128,6 @@ function CodeBuddySettingsPage(props) {
   const [form, setForm] = React.useState(() => mergeFormSection(undefined))
   const [saved, setSaved] = React.useState(false)
   const [error, setError] = React.useState(undefined)
-  const [liveModels, setLiveModels] = React.useState(undefined) // undefined = loading
-  const [liveFailures, setLiveFailures] = React.useState(undefined)
 
   React.useEffect(() => {
     const update = () => setForm(mergeFormSection(sectionOf(scope)))
@@ -137,30 +135,6 @@ function CodeBuddySettingsPage(props) {
     if (scope !== undefined) return scope.subscribe(update)
     return undefined
   }, [scope])
-
-  // Live enterprise model directory: fetched on demand from the host's LLM
-  // model API (which the adapter resolves from the enterprise builtin-models
-  // directory). Nothing runtime-derived is persisted to settings.
-  React.useEffect(() => {
-    const conn = ctx.get('connection')
-    if (conn === undefined || conn.api === undefined) return undefined
-    let alive = true
-    const load = () => {
-      conn.api.llm.models({}).then((res) => {
-        if (!alive) return
-        if (res.result?.ok !== true) { setLiveModels([]); setLiveFailures('模型目录加载失败'); return }
-        const groups = Array.isArray(res.result.value?.groups) ? res.result.value.groups : []
-        const group = groups.find((g) => g.id === 'codebuddy')
-        const list = (group !== undefined && Array.isArray(group.models)) ? group.models : []
-        setLiveModels(list)
-        setLiveFailures(undefined)
-      }).catch(() => {
-        if (alive) { setLiveModels([]); setLiveFailures('模型目录加载失败') }
-      })
-    }
-    load()
-    return () => { alive = false }
-  }, [ctx])
 
   const set = (field) => (value) => {
     setForm((prev) => Object.assign({}, prev, { [field]: value }))
@@ -215,8 +189,6 @@ function CodeBuddySettingsPage(props) {
   const removeModel = (index) => set('models')(normalizeModels(form.models).filter((_, i) => i !== index))
 
   const models = normalizeModels(form.models)
-  const liveList = liveModels === undefined ? undefined : liveModels
-  const liveUsable = Array.isArray(liveList) && liveList.length > 0
 
   return React.createElement('div', null,
     React.createElement('div', { style: Object.assign({}, ROW_STYLE, { marginBottom: '4px', gap: '10px' }) },
@@ -234,7 +206,7 @@ function CodeBuddySettingsPage(props) {
         },
       }, 'v' + PLUGIN_VERSION)),
     React.createElement('p', { style: HINT_STYLE },
-      '模型目录自动从你的 CodeBuddy 企业账号获取（仅企业账号可用，启动时获取、不保存）。此处可调整请求参数；保存后即时生效（live）。'),
+      '模型目录自动采用官方 CodeBuddy 客户端内置的模型（读取本地 product.json，启动后缓存）；读取失败时使用下方「回退模型目录」。此处可调整请求参数；保存后即时生效（live）。'),
     React.createElement(TextField, {
       label: 'API 地址（baseURL）', value: form.baseURL, onChange: set('baseURL'),
       placeholder: 'https://copilot.tencent.com',
@@ -244,22 +216,11 @@ function CodeBuddySettingsPage(props) {
     React.createElement(NumberField, { label: '默认最大输出（maxTokens）', value: form.maxTokens, onChange: set('maxTokens'), placeholder: '64000' }),
     React.createElement(NumberField, { label: '流空闲超时（streamIdleTimeoutMs，毫秒）', value: form.streamIdleTimeoutMs, onChange: set('streamIdleTimeoutMs'), placeholder: '300000' }),
 
-    React.createElement('div', { style: FIELD_STYLE },
-      React.createElement('label', { style: LABEL_STYLE }, '企业模型目录（自动获取 · 只读）'),
-      liveModels === undefined
-        ? React.createElement('p', { style: HINT_STYLE }, '正在获取企业模型目录…')
-        : liveUsable
-          ? React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' } },
-              liveList.map((m) => React.createElement(EnterpriseModelRow, { key: m.id, model: m })))
-          : React.createElement('p', { style: HINT_STYLE },
-              (liveFailures !== undefined ? liveFailures + '。' : '') +
-              '暂未获取到企业模型列表（未登录 CodeBuddy 桌面端 / 非企业账号 / 网络异常）。模型选择器将只显示默认的 auto 模型。')),
-
     React.createElement('details', { style: { marginBottom: '12px' } },
       React.createElement('summary', { style: { cursor: 'pointer', fontSize: '13px', color: 'var(--dsw-alias-label-secondary)' } },
-        '高级：回退模型目录（models）'),
+        '自定义模型目录（models，回退用）'),
       React.createElement('p', { style: HINT_STYLE },
-        '企业账号会自动获取模型列表，正常无需编辑这里；仅在自动获取不可用（未登录 / 个人账号 / 网络异常）时，模型选择器才使用这份手动目录。'),
+        '默认目录读取本机官方 CodeBuddy 的 product.json；未安装官方客户端或读取失败时，模型选择器使用这份自定义目录。留空则仅按默认配置显示。'),
       models.length === 0
         ? React.createElement('p', { style: HINT_STYLE }, '模型选择器中将不显示任何模型；目录外 ID 仍可直接发送。')
         : React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
@@ -279,42 +240,6 @@ function CodeBuddySettingsPage(props) {
       }, '＋ 添加模型')),
 
     React.createElement(SaveBar, { onSave: save, saved, error, onReset: reset }))
-}
-
-/** One read-only enterprise model row (snapshot display). */
-function EnterpriseModelRow(props) {
-  const { model } = props
-  const cell = { display: 'flex', flexDirection: 'column', gap: '2px' }
-  const idStyle = { fontSize: '13px', color: 'var(--dsw-alias-label-primary)' }
-  const subStyle = { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' }
-  const caps = []
-  if (typeof model.maxInputTokens === 'number') caps.push('输入 ' + formatNumber(model.maxInputTokens))
-  if (typeof model.maxOutputTokens === 'number') caps.push('输出 ' + formatNumber(model.maxOutputTokens))
-  const description = typeof model.descriptionZh === 'string' && model.descriptionZh !== ''
-    ? model.descriptionZh
-    : (typeof model.description === 'string' && model.description !== '' ? model.description : undefined)
-  return React.createElement('div', {
-    style: { border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '6px', padding: '6px 8px' },
-  },
-    React.createElement('div', { style: ROW_STYLE },
-      React.createElement('span', { style: idStyle }, model.id),
-      model.status !== undefined && model.status !== 'enabled'
-        ? React.createElement('span', { style: Object.assign({}, subStyle, { color: 'var(--dsw-alias-state-warn-primary)' }) }, model.status)
-        : null),
-    React.createElement('div', { style: cell },
-      typeof model.name === 'string' && model.name !== '' && model.name !== model.id
-        ? React.createElement('span', { style: subStyle }, model.name)
-        : null,
-      caps.length > 0 ? React.createElement('span', { style: subStyle }, caps.join(' · ')) : null,
-      description !== undefined ? React.createElement('span', { style: subStyle }, description) : null))
-}
-
-/** Format a capacity with K/M suffixes for display. */
-function formatNumber(value) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return String(value)
-  if (value >= 1000000 && value % 1000000 === 0) return String(value / 1000000) + 'M'
-  if (value >= 1000 && value % 1000 === 0) return String(value / 1000) + 'K'
-  return String(value)
 }
 
 /** One model row: id / name / description / contextWindow / maxTokens. */

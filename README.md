@@ -63,9 +63,9 @@ dsh plugin --profile web add dsh-codebuddy-models
 
 dsh web 的设置页会多出一个「**CodeBuddy 模型**」区块（本包的 client 半 `lib/client.js` 注册），提供：
 
-- **企业模型目录（自动获取 · 只读）**：实时展示从企业账号拉取到的模型列表（ID / 名称 / 输入输出容量 / 描述），无需手动维护。
+- **模型目录（自动读取 · 只读说明）**：模型目录直接采用本机官方 CodeBuddy 客户端内置的 `product.json`（扫描本地扩展目录，10 分钟缓存），与官方模型选择器一致。
 - **请求参数**：API 地址、默认上下文窗口 / 最大输出 / 流空闲超时。
-- **高级：回退模型目录（models）**：折叠区，仅在自动获取不可用（未登录 / 个人账号 / 网络异常）时生效的手写目录。
+- **高级：自定义模型目录（models，回退用）**：折叠区，仅在扫描不到官方内置目录（未安装官方客户端 / 读取失败）时生效的手写目录。
 - **版本号**：区块标题旁以徽标形式显示插件版本（构建时从 `package.json` 注入，如 `v0.1.6`），便于确认实际生效的插件版本。
 
 保存即写入 `llm-codebuddy` 设置命名空间并即时生效（`applies: live`）。
@@ -86,7 +86,7 @@ dsh web 的设置页会多出一个「**CodeBuddy 模型**」区块（本包的 
 
 ## 配置
 
-`Config` 全部可选，可用 `$DSH_HOME/settings.yaml` 的 `llm-codebuddy:` 节热改（`applies: live`）。`models` 是**回退目录**（仅在企业模型自动获取不可用时生效），默认只有 `auto`：
+`Config` 全部可选，可用 `$DSH_HOME/settings.yaml` 的 `llm-codebuddy:` 节热改（`applies: live`）。`models` 是**回退目录**（仅在扫描不到官方 CodeBuddy 内置目录时生效），默认只有 `auto`：
 
 ```yaml
 llm-codebuddy:
@@ -98,7 +98,7 @@ llm-codebuddy:
 
 > **注意**：`baseURL` 留空（空字符串）等价于省略，会回退到默认端点 `https://copilot.tencent.com`。不要把企业模型列表里的 `serviceEndpoint`（`https://copilot.tencent.com/v2/openapi/chat/completions`）当作 `baseURL`——那个端点是 OpenAPI 专用（需专门 key），桌面端登录态无法直连，会返回 `11101 unauthorized: request is not from an OpenAPI client`。
   models:
-    - id: auto                       # 回退目录：默认仅 auto；可自行添加其它模型 ID
+    - id: auto                       # 回退目录（扫描不到官方目录时）：默认仅 auto；可自行添加其它模型 ID
   retryPolicy:
     mode: normal
     maxRetries: 5
@@ -106,15 +106,15 @@ llm-codebuddy:
 
 ## 模型与权限
 
-模型目录**自动从企业内置模型接口获取**（`www.codebuddy.cn/console/enterprises/{enterpriseId}/builtin-models`，用桌面端登录态鉴权，10 分钟缓存）：企业账号能看到并启用的模型会自动出现在选择器里，无需维护硬编码列表。**该目录只在运行时获取、不写入 `settings.yaml`**，因此不会污染用户配置；设置页的「CodeBuddy 模型」区块通过 LLM 模型 API **只读展示**这份实时目录。
+模型目录**自动采用本机官方 CodeBuddy 客户端的内置目录**（扫描本地扩展/客户端的 `product.json`，10 分钟缓存）：VSCode / VSCode Insiders / CodeBuddy 系列客户端的官方扩展会静态携带这份模型清单，插件从中解析出聊天可用模型（自动过滤 completion 专用模型），因此选择器里出现的就是与官方一致的模型。**该目录只在运行时扫描、不写入 `settings.yaml`**，因此不会污染用户配置。
 
-目录里的容量字段会被映射成 harness 的模型能力并暴露给**自动上下文压缩**（`dsh-compaction-basic`）：`maxInputTokens → contextWindow`、`maxOutputTokens → defaultMaxTokens`。这样压缩器按每个模型的真实上下文窗口计算压力阈值（默认 80%），而不是统一按 100 万 —— 例如 `auto` 的输入容量 168K，压力阈值约为 13.4 万 token，上下文接近用完时就会自动压缩，避免溢出。（在 v0.1.5 及之前，企业模型一律回落到默认 100 万，压缩几乎永远不触发。）
+目录里的容量字段会被映射成 harness 的模型能力并暴露给**自动上下文压缩**（`dsh-compaction-basic`）：`maxInputTokens → contextWindow`、`maxOutputTokens → defaultMaxTokens`。这样压缩器按每个模型的真实上下文窗口计算压力阈值（默认 80%），而不是统一按 100 万 —— 例如 `deepseek-v4-flash` 的输入容量 100 万、`hy3` 为 19.2 万，上下文接近用完时就会自动压缩，避免溢出。（在 v0.1.5 及之前模型一律回落到默认 100 万，压缩几乎永远不触发。）
 
-内置静态目录刻意保持最小（**只有 `auto`**）——`auto` 是唯一几乎必然长期有效的模型；其它模型 ID 仍可直接输入使用（适配器对任意 ID 宽容）。获取失败（未登录 / 非企业账号 / 网络异常）时回退到这份静态目录；此时也可在设置页的「高级：回退模型目录」里手动维护一份目录（为回退模型填上 `contextWindow`/`maxTokens` 同样能让压缩器按真实容量工作）。
+官方目录扫描失败时（未安装官方客户端 / 改了清单结构 / 目录不可读）回退到配置里的**自定义目录**，默认只有 `auto`——`auto` 是唯一几乎必然长期有效的模型；其它模型 ID 仍可直接输入使用（适配器对任意 ID 宽容）。此时可在设置页的「自定义模型目录」里手动维护一份目录（为回退模型填上 `contextWindow`/`maxTokens` 同样能让压缩器按真实容量工作）。
 
 具体账号能用哪些模型由**订阅策略**决定。某模型无权限时后端返回 `11136 / model not allowed by policy`，插件会映射为 `MODEL_NOT_ALLOWED` 错误并给出可读提示（"您暂无该模型的使用权限，请联系管理员。"）。
 
-> 本企业账号实测可用的模型（自动获取）：`deepseek-v4-pro`、`deepseek-v4-flash`、`glm-5.3`、`glm-5.2`、`kimi-k3-2`、`hy4-preview`、`auto` 等 20 个。
+> 官方 `product.json` 内置目录示例：`default`、`glm-5v-turbo`、`deepseek-v4-flash`、`kimi-k2-instruct-taiji`、`default-1.2`、`hunyuan-turbos-vision`、`hunyuan-t1-vision`、`hy3` 等（随官方客户端版本更新）。
 
 ## 推理能力（reasoning）
 

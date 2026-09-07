@@ -13,7 +13,7 @@
 
 import { EventSourceParserStream } from 'eventsource-parser/stream'
 import type { FinishReason, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
-import { CallId, LlmError } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, LlmError } from '@deepseek-ai/dsh-llm'
 
 /** The terminal payload OpenAI-compatible backends send after the last chunk. */
 export const DONE = '[DONE]'
@@ -226,7 +226,7 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
           index: block.index,
           block: {
             type: 'tool-call',
-            id: CallId(block.callId ?? ''),
+            id: ToolCallId(block.callId ?? ''),
             name: block.name ?? '',
             arguments: block.text,
           },
@@ -336,7 +336,7 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
         yield {
           type: 'tool-call-delta',
           index: block.index,
-          id: CallId(block.callId ?? ''),
+          id: ToolCallId(block.callId ?? ''),
           ...(block.name !== undefined ? { name: block.name } : {}),
           argumentsDelta: fragment,
         }

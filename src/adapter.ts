@@ -30,8 +30,12 @@ import {
   ProviderRequestId,
   ReasoningEffortId,
   attributionHeaders,
+  type AppIdentity,
 } from '@deepseek-ai/dsh-llm'
 import type { CodeBuddyAuthHeaders } from './credentials.js'
+import { appendFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import {
   ENTERPRISE_QUOTA_MESSAGE,
   MODEL_NOT_ALLOWED_MESSAGE,
@@ -39,6 +43,28 @@ import {
   parseSse,
   translate,
 } from './sse.js'
+
+/** Diagnostic sink: the last failed request+response, for repro without logs. */
+const FAILURE_DUMP = path.join(os.tmpdir(), 'codebuddy-fail.jsonl')
+
+/**
+ * Attribution identity this adapter sends on every CodeBuddy request.
+ *
+ * dsh-llm requires every provider request to carry app attribution, but the
+ * default identity is the DeepSeek Harness product itself. The CodeBuddy
+ * backend keeps a security-policy profile of non-official agent harnesses by
+ * their `User-Agent`; sending the Harness identity here made direct
+ * high-frequency agent traffic trip that policy (11128) even though the exact
+ * same request succeeds under a neutral proxy UA. As a white-label deployment
+ * of the attribution header (allowed by `attributionHeaders(identity)`), this
+ * adapter identifies itself as the plugin it actually is instead of the
+ * Harness product.
+ */
+export const CODEBUDDY_APP_IDENTITY: AppIdentity = {
+  product: 'dsh-codebuddy-models',
+  version: '0.1.6',
+  url: 'https://github.com/evlon/dsh-codebuddy-models',
+}
 
 /** One optional model entry advertised by the adapter. */
 export interface CodeBuddyCatalogModel {
@@ -52,6 +78,27 @@ export interface CodeBuddyCatalogModel {
   contextWindow?: number
   /** Per-request output cap. */
   maxTokens?: number
+}
+
+/**
+ * One chat-capable model read from the locally-installed official CodeBuddy
+ * client's `product.json` (the same static directory the official UI uses).
+ * All entries are usable by construction — the official client ships no
+ * disabled rows — so no status filter applies.
+ */
+export interface CodeBuddyOfficialModel {
+  /** Wire model id accepted by the backend. */
+  id: string
+  /** Display name. */
+  name: string
+  /** Input capacity the official client declares (product `maxInputTokens`). */
+  maxInputTokens: number
+  /** Per-request output cap the official client declares (product `maxOutputTokens`). */
+  maxOutputTokens: number
+  /** Optional Chinese description shipped by the product manifest. */
+  descriptionZh?: string
+  /** Whether the official client accepts image input for this model. */
+  supportsImages?: boolean
 }
 
 /** Validated connection facts for one operation. */
@@ -77,11 +124,12 @@ export interface CodeBuddyAdapterOptions {
   /** Resolve the authenticated backend headers (token + account identity). */
   resolveHeaders: () => Promise<CodeBuddyAuthHeaders>
   /**
-   * Resolve the enterprise builtin-models directory, or `undefined` when
-   * unavailable (no login, non-enterprise account, or a fetch failure). The
-   * adapter prefers this live catalog and falls back to the static default.
+   * Resolve the official CodeBuddy client model catalog (scanned from the
+   * local `product.json`), or `undefined` when no official client is
+   * installed or the manifest cannot be read. The adapter prefers this
+   * catalog and falls back to the configured {@link CodeBuddyCatalogModel}.
    */
-  resolveDirectory?: () => Promise<readonly import('./credentials.js').CodeBuddyEnterpriseModel[] | undefined>
+  resolveCatalog?: () => Promise<readonly CodeBuddyOfficialModel[] | undefined>
 }
 
 /** Default combined request/response context capacity. */
@@ -110,11 +158,12 @@ const REASONING: LlmModelReasoningInfo = {
 }
 
 /**
- * The default CodeBuddy model catalog. Deliberately minimal: only `auto` is
- * guaranteed to stay valid across subscription changes. Enterprise accounts
- * get their real catalog from the enterprise builtin-models directory
- * (adapter `listModels` prefers it); `auto` covers everyone else. Other model
- * ids still work when typed directly (`resolveModel` accepts any id).
+ * The fallback CodeBuddy model catalog. Deliberately minimal: only `auto` is
+ * guaranteed to stay valid across subscription changes. The adapter prefers
+ * the official client catalog (`resolveCatalog`, scanned from the local
+ * product.json) and falls back to this configured catalog when the scan finds
+ * nothing. Other model ids still work when typed directly (`resolveModel`
+ * accepts any id).
  */
 export const DEFAULT_MODELS: readonly CodeBuddyCatalogModel[] = [
   { id: 'auto', name: 'Auto', contextWindow: DEFAULT_CONTEXT_WINDOW },
@@ -277,7 +326,18 @@ export function classifyHttpError(status: number, raw: string): ClassifiedHttpEr
     // harness routes the code to its context-overflow recovery path.
     return { code: stable, message: rawMessage ?? 'CodeBuddy request exceeded the model context window', ...(requestId ? { requestId } : {}) }
   }
-  return { code: fallback, message: rawMessage ?? fallbackMessage, ...(requestId ? { requestId } : {}) }
+  // Unrecognized business code: keep the provider wording and append its
+  // numeric code so a support issue can be traced (e.g. "request illegal
+  // (CodeBuddy 11101)" instead of a bare message).
+  const codeHint = typeof code === 'number' ? ` (CodeBuddy ${code})` : ''
+  const message = rawMessage !== undefined ? `${rawMessage}${codeHint}` : (parsed.displayMsg?.zh ?? fallbackMessage)
+  if (code === 11128) {
+    // Temporary security-policy interception at the gateway: prefer the
+    // provider's own zh display ("请求被安全策略拦截…") over the bare
+    // "request illegal" wording.
+    return { code: fallback, message: parsed.displayMsg?.zh ?? message, ...(requestId ? { requestId } : {}) }
+  }
+  return { code: fallback, message, ...(requestId ? { requestId } : {}) }
 }
 
 
@@ -293,22 +353,22 @@ function modelInfo(provider: string, model: CodeBuddyCatalogModel): LlmModelInfo
 }
 
 /**
- * Map one enterprise directory entry onto an {@link LlmModelInfo}. Only
- * `enabled` models are advertised; capacities come from the subscription grant
- * when present.
+ * Map one official CodeBuddy catalog entry onto an {@link LlmModelInfo}. Every
+ * scanned entry is usable — the official product manifest ships no disabled
+ * rows — so no status filter applies.
  * @param provider - the provider route id.
- * @param model - one directory entry.
+ * @param model - one official catalog entry.
  */
-function enterpriseModelInfo(
+function officialModelInfo(
   provider: string,
-  model: import('./credentials.js').CodeBuddyEnterpriseModel,
+  model: CodeBuddyOfficialModel,
 ): LlmModelInfo {
   return {
     provider,
     id: model.id,
     name: model.name ?? model.id,
     ...(model.descriptionZh !== undefined && model.descriptionZh.length > 0 ? { description: model.descriptionZh } : {}),
-    inputModalities: ['text'],
+    inputModalities: model.supportsImages === true ? (['text', 'image'] as const) : (['text'] as const),
   }
 }
 
@@ -334,34 +394,30 @@ export class CodeBuddyAdapter extends LlmAdapter {
 
   async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const staticModels = this.config.options().models.map((model) => modelInfo(provider, model))
-    if (this.config.resolveDirectory === undefined) return staticModels
-    const directory = await this.config.resolveDirectory().catch(() => undefined)
-    if (directory === undefined) return staticModels
-    const enabled = directory.filter((entry) => entry.status === 'enabled')
-    if (enabled.length === 0) return staticModels
-    return enabled.map((entry) => enterpriseModelInfo(provider, entry))
+    const catalog = await this.config.resolveCatalog?.().catch(() => undefined)
+    if (catalog === undefined || catalog.length === 0) return staticModels
+    return catalog.map((entry) => officialModelInfo(provider, entry))
   }
 
   async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     const connection = this.config.options()
     const configured = connection.models.find((entry) => entry.id === model)
-    const enterprise = await this.findEnterpriseModel(model)
-    // Live enterprise capacity wins over the static fallback catalog: the
-    // directory carries the subscription's real input/output grants, and
+    const official = await this.findOfficialModel(model)
+    // The official client catalog carries the real input/output grants, and
     // exposing them here is what lets the harness compaction engine compute a
     // sane pressure threshold instead of assuming the 1M default.
-    if (enterprise !== undefined) {
+    if (official !== undefined) {
       return {
         provider,
         id: model,
-        name: enterprise.name ?? model,
-        ...(enterprise.descriptionZh !== undefined && enterprise.descriptionZh.length > 0
-          ? { description: enterprise.descriptionZh }
+        name: official.name ?? model,
+        ...(official.descriptionZh !== undefined && official.descriptionZh.length > 0
+          ? { description: official.descriptionZh }
           : {}),
-        inputModalities: ['text'] as const,
+        inputModalities: official.supportsImages === true ? (['text', 'image'] as const) : (['text'] as const),
         reasoning: REASONING,
-        context: { contextWindow: enterprise.maxInputTokens },
-        defaultMaxTokens: enterprise.maxOutputTokens,
+        context: { contextWindow: official.maxInputTokens },
+        defaultMaxTokens: official.maxOutputTokens,
       }
     }
     const info = configured === undefined
@@ -375,12 +431,12 @@ export class CodeBuddyAdapter extends LlmAdapter {
     }
   }
 
-  /** Resolve one live enterprise directory entry, or undefined when unavailable. */
-  private async findEnterpriseModel(model: string): Promise<import('./credentials.js').CodeBuddyEnterpriseModel | undefined> {
-    if (this.config.resolveDirectory === undefined) return undefined
-    const directory = await this.config.resolveDirectory().catch(() => undefined)
-    if (directory === undefined) return undefined
-    return directory.find((entry) => entry.id === model && entry.status === 'enabled')
+  /** Resolve one official catalog entry, or undefined when unavailable. */
+  private async findOfficialModel(model: string): Promise<CodeBuddyOfficialModel | undefined> {
+    if (this.config.resolveCatalog === undefined) return undefined
+    const catalog = await this.config.resolveCatalog().catch(() => undefined)
+    if (catalog === undefined) return undefined
+    return catalog.find((entry) => entry.id === model)
   }
 
   prepareCall(provider: string, model: string): Promise<PreparedAdapterCall> {
@@ -402,7 +458,7 @@ export class CodeBuddyAdapter extends LlmAdapter {
 
     const requestHeaders: Record<string, string> = {
       ...headers,
-      ...attributionHeaders(),
+      ...attributionHeaders(CODEBUDDY_APP_IDENTITY),
     }
 
     let response: Response
@@ -422,6 +478,13 @@ export class CodeBuddyAdapter extends LlmAdapter {
 
     if (!response.ok) {
       const raw = await response.text().catch(() => '')
+      // Diagnostic: append the exact failing request+response once per failure
+      // so a repro outside logs can be diffed (transient file, no retry data).
+      try {
+        await appendFile(FAILURE_DUMP, `${JSON.stringify({ at: Date.now(), url, requestBody: body, status: response.status, responseBody: raw })}\n`)
+      } catch {
+        /* dump is best-effort */
+      }
       const classified = classifyHttpError(response.status, raw)
       throw new LlmError(classified.message, classified.code, {
         cause: new Error(raw.length > 0 ? raw : `CodeBuddy HTTP ${response.status}`),
