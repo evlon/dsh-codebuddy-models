@@ -6,6 +6,20 @@
 >
 > 构建时用 esbuild 把运行期依赖（`@deepseek-ai/dsh-llm`、`dsh-settings`、`schemastery`、`eventsource-parser`）**内联打包进 `lib/index.js`**，发布产物自包含、无外部运行期 import——这样它在 **DeepSeek Harness Desktop 的 `preset-plugins` 目录（没有 node_modules）** 里也能像官方 `dsh-tauri*` 插件一样直接加载。
 
+## DeepSeek Harness 版本适配
+
+本插件针对以下 DSH 宿主版本编译并测试（构建时对运行时引用做 esbuild 自包含内联，发布产物在宿主进程内零外部运行期 import）：
+
+| 宿主包 | 适配的版本范围 | 说明 |
+|---|---|---|
+| `@deepseek-ai/cordis` | `^4.0.2` | 组合容器（`Context`，type-only） |
+| `@deepseek-ai/dsh-llm` | `^0.1.2-rc.1` | LLM 适配 / 流式 / 错误分类（运行时已内联） |
+| `@deepseek-ai/dsh-settings` | `^0.1.2-rc.1` | 设置服务（type-only） |
+
+> **注意**：DSH 以 `rc` 预发布版本按日推进，而 npm 对预发布版本的范围匹配是**按 `major.minor.patch` 元组锚定**的——`^0.1.2-rc.1` 只会匹配 `0.1.2.*` 的预发布，不会自动覆盖后续新出的 `0.1.3-rc.x`/`0.1.4-…`。因此**宿主升到下一个 rc 元组时，本插件需同步把 peer/dev 范围升到对应 rc、重新 `pnpm install` 并构建测试**（源码兼容则发 patch；有 API 破坏则需适配后发版）。本版本号对应上面的适配范围；宿主超出该范围或为 `alpha` 不稳定快照时可能行为异常，请在升级宿主前先升级本插件。
+
+> **alpha 说明**：`0.1.5-alpha.1` 等 `alpha` 为不稳定快照，非官方发布通道，**未按此适配**，仅记录/可尝试使用，出现问题优先反馈。
+
 ## 工作原理
 
 ```
