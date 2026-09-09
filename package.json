@@ -83,6 +83,7 @@
     "@deepseek-ai/dsh-settings": "^0.1.2-rc.1",
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.2",
+    "semver": "^7.6.0",
     "typescript": "^5.9.0"
   }
 }

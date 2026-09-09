@@ -1,0 +1,136 @@
+# dsh-daily-sync：DeepSeek Harness daily rc 自动同步守卫。
+#
+# 目的：宿主 @deepseek-ai/dsh-* 每日按 `next` rc 发版（例 0.1.2-rc.1）。npm 对预发布范围是
+# 按 `major.minor.patch` 元组锚定的——本插件声明的 `^<tuple>` 不会自动覆盖下一个 rc tuple，
+# 需把 peer/dev 范围同步到新 rc。
+#
+# 本 workflow 每天自动：
+#   1. 读 @deepseek-ai/dsh-agent 的 npm `next`，与本插件声明范围比对（scripts/dsh-sync-check.mjs）。
+#   2. NOOP（已同步/无 dsh peer）→ 什么都不做。
+#   3. SYNCABLE → 在仓库里把 dsh-* 范围改成 ^<next>，pnpm install + build + test：
+#      - 全部通过 = 纯机械 → **直接提交到 main**（不 bump 版本、不打 release tag——发布仍由人触发）。
+#      - 任一步失败 = 需改码/依赖未就绪 → 用 gh 开一个 issue，**不提交**、不改代码。
+#   4. 只追官方 `next`；绝不追 `alpha`（不稳定快照）。不自动触发 npm publish。
+#
+# 需要 secret：无（用默认 GITHUB_TOKEN，permissions contents/issues 足够）。
+name: dsh-daily-sync
+
+on:
+  schedule:
+    # 每日 03:17 UTC（北京时间 11:17），避开 npm-publish 等高峰，留余量给手动 dispatch。
+    - cron: '17 3 * * *'
+  workflow_dispatch: # 手动触发调试
+
+permissions:
+  contents: write # 机械同步直提 main
+  issues: write   # 需改码时开 issue
+
+jobs:
+  sync:
+    name: Sync dsh rc
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Run sync-check (detect dsh rc lag)
+        id: check
+        shell: bash
+        run: |
+          node scripts/dsh-sync-check.mjs > /tmp/sync.json 2> /tmp/sync.err || {
+            echo "::error::sync-check failed"; cat /tmp/sync.err; exit 1
+          }
+          cat /tmp/sync.json
+          VERDICT=$(node -e "console.log(require('/tmp/sync.json').verdict)")
+          NEXT=$(node -e "console.log(require('/tmp/sync.json').next)")
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: No-op (already in sync / no dsh peer)
+        if: steps.check.outputs.verdict == 'NOOP' || steps.check.outputs.verdict == 'NO_DSH_PEER'
+        run: echo "verdict=${{ steps.check.outputs.verdict }} — nothing to sync."
+
+      # 机械同步尝试：只在 SYNCABLE 时运行。
+      - name: Apply mechanical range bump + install + build + test
+        if: steps.check.outputs.verdict == 'SYNCABLE'
+        id: sync
+        shell: bash
+        run: |
+          NEXT="${{ steps.check.outputs.next }}"
+          echo "Syncing dsh rc -> $NEXT"
+          # 生成把 dsh-* 范围改成 ^<NEXT> 的 package.json
+          node scripts/dsh-sync-check.mjs --next "$NEXT" --emit-new-pkg ./package.json.new
+          cp package.json.new package.json
+          rm -f package.json.new
+          # 重装解析到新 rc；再构建+测试
+          pnpm install --no-frozen-lockfile || { echo "INSTALL_FAIL"; exit 90; }
+          # 构建（所有候选仓都有 build 脚本）
+          if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
+            pnpm build || { echo "BUILD_FAIL"; exit 91; }
+          fi
+          # 测试（有 test 脚本才跑）
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+            pnpm test || { echo "TEST_FAIL"; exit 92; }
+          fi
+          echo "MECHANICAL_OK"
+          echo "rc=$NEXT" >> "$GITHUB_OUTPUT"
+
+      # 通过：直提 main（改动 package.json + lockfile；README 版本表下一轮补或交给发布流程）。
+      - name: Direct-commit mechanical sync to main
+        if: steps.sync.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NEXT="${{ steps.check.outputs.next }}"
+          git config user.name "dsh-daily-sync[bot]"
+          git config user.email "dsh-daily-sync[bot]@users.noreply.github.com"
+          git add -A
+          # 若没有任何实际改动（例如范围早已被其它提交覆盖），就不 push。
+          if git diff --cached --quiet; then
+            echo "no file change; skip commit"
+          else
+            git commit -m "chore: sync dsh host rc -> $NEXT (peer/dev ranges + lockfile)" --allow-empty
+            git push origin HEAD:main
+            echo "committed dsh rc $NEXT"
+          fi
+
+      # 失败：开 issue（不改码不提交）。
+      - name: Open issue (needs code / deps not ready)
+        if: steps.sync.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NEXT="${{ steps.check.outputs.next }}"
+          # 去重：已存在同标题 open issue 则不重复开
+          EXISTING=$(gh issue list --state open --search "auto-sync dsh rc $NEXT" --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "issue already open: #$EXISTING"
+            exit 0
+          fi
+          # 用 heredoc（未加引号 → $NEXT 展开）。正文不用反引号，避免 bash 命令替换转义问题。
+          cat > /tmp/issue-body.md <<EOF
+          每日同步脚本尝试把 dsh-* peer/dev 范围升到 [$NEXT]，但 pnpm install / build / test 未通过（构建输出见本次 workflow run log）。
+
+          可能原因：
+          - 本插件组合了其它 @evlon 包且它们尚未发布对齐到 [$NEXT] 的 peer 范围，需先发布它们的对齐版；
+          - dsh [$NEXT] 有 API 破坏，需要改源码适配；
+          - 其它环境/依赖问题。
+
+          请人工处理后手动重跑本 workflow（workflow_dispatch）确认。
+          EOF
+          gh issue create --title "auto-sync dsh rc $NEXT 失败：需人工适配/依赖未就绪" --body-file /tmp/issue-body.md
