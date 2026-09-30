@@ -7,8 +7,9 @@
  * `layoutOf` only knows `llm-deepseek` / `llm-pi-ai` and shows a "edit
  * settings.yaml" hint for everything else), so this plugin ships its own
  * editor. It reads and writes the same `llm-codebuddy` namespace the host half
- * registers through `installSettingsSection`, so edits land in the same
- * document and take effect live (`applies: live`).
+ * registers through `registerConfigurableProviders`; in dsh 0.1.7 the client
+ * reads/writes it via `configForms.get('llm-codebuddy')`, whose edits land in
+ * the volatile fields and take effect live.
  *
  * Bundled by `scripts/build-client.mjs` into `lib/client.js` as a
  * `window.__ModuleLoader__.load({ id, factory })` self-contained module.
@@ -22,7 +23,12 @@ import React from 'react'
 import { FORM_DEFAULTS, mergeFormSection, normalizeModels, validateModels } from './client-schema.js'
 
 /** Required services (cordis fiber inject). */
-export const inject = ['slots', 'settingsScope', 'locale']
+// dsh 0.1.7: the client-side settings service is `configForms` (provided by
+// @deepseek-ai/dsh-client-ui-settings), NOT the old `settingsScope`.
+// `configForms.get(entryId)` returns a ConfigFormController whose getSnapshot()
+// yields { status, value, base, user, revision, writable, mode } and which
+// supports subscribe/set/unset/mutate.
+export const inject = ['slots', 'configForms', 'locale']
 
 /** Settings namespace (matches the host half's `settingsNamespace`). */
 const NS = 'llm-codebuddy'
@@ -46,12 +52,12 @@ const TEXTAREA_STYLE = Object.assign({}, INPUT_STYLE, { minHeight: '56px', resiz
 const ROW_STYLE = { display: 'flex', alignItems: 'center', gap: '8px' }
 const HINT_STYLE = { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', margin: '2px 0 0' }
 
-/** Bind the settings scope for a namespace; returns undefined until ready. */
+/** Bind the config form controller for a namespace; returns undefined until ready. */
 function bindScope(ctx, namespace) {
-  const settingsScope = ctx.get('settingsScope')
-  if (settingsScope === undefined) return undefined
+  const configForms = ctx.get('configForms')
+  if (configForms === undefined) return undefined
   try {
-    return settingsScope.bind({ namespace })
+    return configForms.get(namespace)
   } catch {
     return undefined
   }
@@ -61,6 +67,8 @@ function bindScope(ctx, namespace) {
 function sectionOf(scope) {
   if (scope === undefined) return undefined
   const snap = scope.getSnapshot()
+  if (snap === undefined) return undefined
+  if (snap.status === 'unavailable' || snap.status === 'loading') return undefined
   return snap.value ?? snap.base ?? undefined
 }
 

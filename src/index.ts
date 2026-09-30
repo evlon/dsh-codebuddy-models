@@ -18,7 +18,6 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 import { LlmError, RetryPolicySchema, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 
@@ -33,8 +32,13 @@ export * from './product-catalog.js'
 export * from './sse.js'
 
 export const name = 'llm-codebuddy'
-/** The LLM registry is the only hard dependency. */
-export const inject = ['llm']
+/**
+ * The LLM registry is the hard dependency; `settings` is declared so Cordis
+ * waits for the settings system to be ready before apply, and so the volatile
+ * Config fields are projected into the native settings form (0.1.7
+ * `SettingsForms.describe()`).
+ */
+export const inject = ['llm', 'settings']
 
 const NS = 'llm-codebuddy'
 /** The single provider route this plugin owns. */
@@ -64,14 +68,20 @@ export interface Config {
   retryPolicy?: import('@deepseek-ai/dsh-llm').RetryPolicyConfig
 }
 
-export const Config: z<Config> = z.object({
-  baseURL: z.string(),
-  maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_MAX_TOKENS),
-  defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
-  models: z.array(catalogModel).default(DEFAULT_MODELS as unknown as Schemastery.TypeT<typeof catalogModel>[]),
-  streamIdleTimeoutMs: z.number().step(1).min(1).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
+/**
+ * Plugin config. In dsh 0.1.7 the settings system projects only the fields
+ * marked `.volatile()` into the editable form (`SettingsForms.describe()`),
+ * so every user-tunable request parameter is volatile; `retryPolicy` stays
+ * non-volatile (deployment-fixed, edited only in `settings.yaml`).
+ */
+export const Config = z.object({
+  baseURL: z.string().default('').volatile(),
+  maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_MAX_TOKENS).volatile(),
+  defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW).volatile(),
+  models: z.array(catalogModel).default(DEFAULT_MODELS as unknown as Schemastery.TypeT<typeof catalogModel>[]).volatile(),
+  streamIdleTimeoutMs: z.number().step(1).min(1).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS).volatile(),
   retryPolicy: RetryPolicySchema,
-})
+}) as unknown as z<Config>
 
 /** Public backend origin; the adapter appends `/v2/chat/completions`. */
 export const PUBLIC_BASE_URL = 'https://copilot.tencent.com'
@@ -135,8 +145,48 @@ function deepEqualJson(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
+/**
+ * Unwrap `apply`'s raw config into a plain `Config`: in dsh 0.1.7 every
+ * `.volatile()` field arrives as a cosmokit `Volatile<T>` object (schemastery
+ * `Schema.resolve` wraps meta.volatile nodes), so each field must be read via
+ * `.get()`. Identical to the official `plainOptions` / dsh-matrix-agent's
+ * `plainMatrixConfig`; uses duck-typing to avoid a hard cosmokit dependency.
+ * After a `loader/volatile-update` the config object's identity is stable and
+ * the Volatile refs are updated in place, so re-running this yields the latest
+ * values.
+ */
+function unwrapVolatile(value: unknown): unknown {
+  if (value !== null && typeof value === 'object' && typeof (value as { get?: unknown }).get === 'function') {
+    const keys = Object.keys(value as object)
+    if (keys.length <= 2 && keys.includes('get')) return (value as { get(): unknown }).get()
+  }
+  return value
+}
+
+function plainConfig(raw: Config): Config {
+  const src = raw as unknown as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const key of Object.keys(src)) {
+    out[key] = unwrapVolatile(src[key])
+  }
+  return out as unknown as Config
+}
+
 export function apply(ctx: Context, config: Config): void {
-  let current = (): Config => config
+  // 0.1.7: volatile fields are `Volatile<T>` objects here; keep the raw
+  // reference (its Volatile refs are updated in place on hot-edit) and unwrap
+  // a plain snapshot for the adapter thunk. The plain snapshot is cached so the
+  // `options()` memoization (`raw === lastRaw`) stays effective across calls;
+  // `loader/volatile-update` refreshes the cache and re-resolves adapter facts.
+  const rawConfig = config
+  let plainCache: Config | undefined
+  const current = (): Config => {
+    if (plainCache === undefined) plainCache = plainConfig(rawConfig)
+    return plainCache
+  }
+  const refresh = (): void => {
+    plainCache = plainConfig(rawConfig)
+  }
   let lastRaw: Config | undefined
   let lastGood: ReturnType<typeof resolveAdapterOptions> | undefined
   const options = () => {
@@ -197,23 +247,25 @@ export function apply(ctx: Context, config: Config): void {
     registeredPolicy = policy
   }
 
-  // Settings: register the `llm-codebuddy` namespace (live) and wire the
-  // config source so edits re-resolve the adapter facts. The official model
-  // catalog is scanned from the local client's product.json by the adapter
-  // (`resolveCatalog`) and is NOT persisted here — the namespace only carries
-  // the hand-configured fallback catalog plus request parameters.
-  ctx.inject(['settings'], (sctx) => {
-    const settings = sctx.settings as SettingsProvider
-    const scope = settings.register(NS, Config, { applies: 'live', base: config })
-    const applyUser = (): void => {
-      // `scope.get()` is the resolved value (base + defaults + user layer).
-      current = () => scope.get()
-    }
-    applyUser()
-    const unsub = scope.watch(() => applyUser())
-    ensureRegistrationFacts()
-    sctx.effect(() => () => {
-      unsub()
-    })
-  })
+  // Settings (0.1.7): user edits land through the native settings form, which
+  // writes the `.volatile()` fields and emits `loader/volatile-update`. The
+  // official model catalog is scanned from the local client's product.json by
+  // the adapter (`resolveCatalog`) and is NOT persisted here — the volatile
+  // fields only carry the hand-configured fallback catalog plus request
+  // parameters. On hot-edit the `current` thunk re-reads `rawConfig` (its
+  // Volatile refs were updated in place) so the adapter facts re-resolve.
+  try {
+    const onVolatile = (ctx.on as (event: string, cb: (paths: unknown) => void) => () => void)(
+      'loader/volatile-update',
+      () => {
+        // Refresh the unwrapped snapshot so the adapter thunk re-reads the
+        // latest volatile values, then re-check registration facts.
+        refresh()
+        ensureRegistrationFacts()
+      },
+    )
+    ctx.effect(() => () => onVolatile())
+  } catch (error) {
+    ctx.logger.warn('[dsh-codebuddy-models] loader/volatile-update listener failed: %s', error instanceof Error ? error.message : String(error))
+  }
 }

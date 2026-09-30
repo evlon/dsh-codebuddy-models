@@ -212,19 +212,25 @@ function serializeMessages(messages: GenerateOptions['messages']): Record<string
       wire.push(serializeAssistant(message))
       continue
     }
-    // user role
-    const toolResults = message.content.filter((block) => block.type === 'tool-result')
-    const text = flattenText(message.content)
-    if (text.length > 0 || toolResults.length === 0) {
-      wire.push({ role: 'user', content: text })
-    }
-    for (const result of toolResults) {
+    // 0.1.7: a tool result is a first-class `role: 'tool'` message (not a
+    // `tool-result` content block). It carries its own `toolCallId` and the
+    // result text in `content`.
+    if (message.role === 'tool') {
       wire.push({
         role: 'tool',
-        tool_call_id: result.toolCallId,
-        content: flattenText(result.content) || '(no output)',
+        tool_call_id: message.toolCallId,
+        content: flattenText(message.content) || '(no output)',
       })
+      continue
     }
+    // 0.1.7: developer messages carry tool-addition/tool-removal blocks that
+    // the CodeBuddy backend (a plain OpenAI chat-completions endpoint) does not
+    // understand; they are dropped rather than forwarded.
+    if (message.role === 'developer') {
+      continue
+    }
+    // user role: plain text only (tool results no longer live here in 0.1.7).
+    wire.push({ role: 'user', content: flattenText(message.content) })
   }
   return wire
 }
