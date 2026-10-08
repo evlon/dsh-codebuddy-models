@@ -3,7 +3,7 @@ import test from 'node:test'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { CredentialManager } from '../lib/credentials.js'
+import { CredentialManager, CredentialResolver } from '../lib/credentials.js'
 
 async function writeInfo(file, overrides = {}) {
   const info = {
@@ -102,5 +102,57 @@ test('throws when refresh returns a failure code', async () => {
     })
   } finally {
     globalThis.fetch = originalFetch
+  }
+})
+
+test('resolver picks the first candidate and invalidate advances to the next', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cbmodels-resolver-'))
+  const stale = path.join(dir, 'stale.info')
+  const fresh = path.join(dir, 'fresh.info')
+  try {
+    await writeInfo(stale, {
+      account: { uid: 'u-stale', enterpriseId: 'e-1', nickname: 'old' },
+      auth: { accessToken: 'acc-stale', refreshToken: 'ref-stale', expiresAt: Date.now() + 3_600_000 },
+    })
+    await writeInfo(fresh, {
+      account: { uid: 'u-fresh', enterpriseId: 'e-2', nickname: 'new' },
+      auth: { accessToken: 'acc-fresh', refreshToken: 'ref-fresh', expiresAt: Date.now() + 3_600_000 },
+    })
+
+    const resolver = new CredentialResolver([stale, fresh])
+    // First candidate is used.
+    const first = await resolver.getHeaders()
+    assert.equal(first['x-user-id'], 'u-stale')
+    assert.equal(resolver.currentFile, stale)
+
+    // Invalidation deletes the stale file and switches to the next candidate.
+    const switched = await resolver.invalidateCurrent()
+    assert.equal(switched, true)
+    await assert.rejects(() => fs.access(stale), /ENOENT|no such file/)
+
+    const second = await resolver.getHeaders()
+    assert.equal(second['x-user-id'], 'u-fresh')
+    assert.equal(resolver.currentFile, fresh)
+
+    // No more candidates after the last is invalidated.
+    const noneLeft = await resolver.invalidateCurrent()
+    assert.equal(noneLeft, false)
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('resolver reports false when no candidate remains', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cbmodels-resolver2-'))
+  const only = path.join(dir, 'only.info')
+  try {
+    await writeInfo(only)
+    const resolver = new CredentialResolver([only])
+    await resolver.getHeaders()
+    const switched = await resolver.invalidateCurrent()
+    assert.equal(switched, false)
+    await assert.rejects(() => fs.access(only), /ENOENT|no such file/)
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true })
   }
 })

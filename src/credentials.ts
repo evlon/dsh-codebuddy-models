@@ -13,7 +13,7 @@
  * @module dsh-codebuddy-models/credentials
  */
 
-import { promises as fs, readdirSync } from 'node:fs'
+import { promises as fs, readdirSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -79,10 +79,15 @@ export function authDirs(): string[] {
 }
 
 /**
- * Find the first `*.info` auth file in the candidate directories.
- * @returns the absolute path of the file, or `undefined` when none is found.
+ * Find every `*.info` auth file across the candidate directories, newest first
+ * (by filesystem mtime). A user with several CodeBuddy accounts keeps several
+ * `.info` files; directory order is arbitrary, so picking the first entry used
+ * to select a stale login. Sorting by mtime prefers the account most recently
+ * touched by the desktop client — the one currently in use.
+ * @returns absolute paths, newest first.
  */
-export function findAuthFile(): string | undefined {
+export function findAuthFiles(): string[] {
+  const found: Array<{ file: string; mtimeMs: number }> = []
   for (const dir of authDirs()) {
     let entries: string[]
     try {
@@ -91,12 +96,28 @@ export function findAuthFile(): string | undefined {
       continue
     }
     for (const entry of entries) {
-      if (entry.endsWith('.info')) {
-        return path.join(dir, entry)
+      if (!entry.endsWith('.info')) continue
+      const file = path.join(dir, entry)
+      let mtimeMs = 0
+      try {
+        mtimeMs = statSync(file).mtimeMs
+      } catch {
+        mtimeMs = 0
       }
+      found.push({ file, mtimeMs })
     }
   }
-  return undefined
+  // Stable newest-first order; ties fall back to path order (deterministic).
+  found.sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file))
+  return found.map((entry) => entry.file)
+}
+
+/**
+ * Find the most recently modified `*.info` auth file.
+ * @returns the absolute path of the file, or `undefined` when none is found.
+ */
+export function findAuthFile(): string | undefined {
+  return findAuthFiles()[0]
 }
 
 /** Read a JSON file with tolerant BOM handling. */
@@ -147,7 +168,7 @@ export class CredentialManager {
   }
 
   /** The currently-valid session, refreshing first if near expiry. */
-  async session(): Promise<{ auth: AuthSession; account: AccountSession }> {
+  async session(forceRefresh = false): Promise<{ auth: AuthSession; account: AccountSession }> {
     return this.withLock(async () => {
       await this.loadIfStale()
       const info = this.cached
@@ -158,9 +179,10 @@ export class CredentialManager {
         throw new Error('CodeBuddy 登录文件缺少 accessToken，请先在桌面端重新登录')
       }
       const expiresAt = typeof auth.expiresAt === 'number' ? auth.expiresAt : 0
-      // refresh 60s before expiry
+      // refresh 60s before expiry, or unconditionally when forced (an auth
+      // failure just proved the stored token is no longer accepted).
       const nearExpiry = Date.now() + 60_000 >= expiresAt
-      if (nearExpiry) {
+      if (nearExpiry || forceRefresh) {
         await this.refresh(info)
       }
       const freshAuth = info.auth ?? auth
@@ -174,6 +196,28 @@ export class CredentialManager {
         account,
       }
     })
+  }
+
+  /**
+   * Force a token refresh against the backend and persist the result, even when
+   * the stored token has not yet reached its expiry window. Used as the fallback
+   * when the backend rejected the current token with 401/403: the refreshToken
+   * may still be valid even though the accessToken is not.
+   * @returns true on success.
+   * @throws when the refresh endpoint rejects the stored refreshToken.
+   */
+  async forceRefresh(): Promise<boolean> {
+    await this.withLock(async () => {
+      await this.loadIfStale()
+      const info = this.cached
+      if (info === undefined) throw new Error(`无法读取 CodeBuddy 登录文件：${this.path}`)
+      const auth = info.auth ?? {}
+      if (typeof auth.refreshToken !== 'string' || auth.refreshToken.length === 0) {
+        throw new Error('CodeBuddy 登录文件缺少 refreshToken，请先在桌面端重新登录')
+      }
+      await this.refresh(info)
+    })
+    return true
   }
 
   /** Build the authenticated headers for one backend request. */
@@ -270,4 +314,103 @@ export class CredentialManager {
 export function openCredentialManager(): CredentialManager | undefined {
   const file = findAuthFile()
   return file === undefined ? undefined : new CredentialManager(file)
+}
+
+/**
+ * A credential resolver over the set of local CodeBuddy login files.
+ *
+ * It holds the current {@link CredentialManager} (newest `.info` first) and
+ * exposes two operations the adapter drives:
+ *
+ * - {@link getHeaders} resolves the authenticated headers for the current file,
+ *   lazily opening the newest candidate on first use.
+ * - {@link invalidateCurrent} deletes the current (stale) `.info` file and
+ *   falls through to the next candidate. A user with several CodeBuddy accounts
+ *   keeps several `.info` files; when the backend rejects one with 401/403 the
+ *   file is superseded, so removing it leaves only the currently-valid login.
+ *   Returns true when a different candidate is now in play (the adapter should
+ *   retry), false when none remain.
+ *
+ * This replaces the previous single-file singleton: instead of pinning one
+ * arbitrary directory entry forever, the resolver re-scans after each
+ * invalidation and always uses the newest surviving file.
+ */
+export class CredentialResolver {
+  private manager: CredentialManager | undefined
+  /**
+   * Optional fixed candidate list (newest first). When omitted, candidates are
+   * re-scanned from {@link findAuthFiles} on each open. Tests inject an explicit
+   * list to avoid depending on the platform `%LOCALAPPDATA%` layout.
+   */
+  private readonly fixed: string[] | undefined
+
+  constructor(fixedCandidates?: string[]) {
+    this.fixed = fixedCandidates
+  }
+
+  /** The path of the credential currently in use, if any. */
+  get currentFile(): string | undefined {
+    return this.manager?.file
+  }
+
+  private candidates(): string[] {
+    if (this.fixed === undefined) return findAuthFiles()
+    // In fixed mode, drop entries that have since been deleted (e.g. by
+    // invalidateCurrent) so the resolver advances to the next surviving file.
+    return this.fixed.filter((file) => {
+      try {
+        statSync(file)
+        return true
+      } catch {
+        return false
+      }
+    })
+  }
+
+  private openNext(): CredentialManager | undefined {
+    const file = this.candidates()[0]
+    this.manager = file === undefined ? undefined : new CredentialManager(file)
+    return this.manager
+  }
+
+  /** Resolve headers for the current (or next newest) login file. */
+  async getHeaders(): Promise<CodeBuddyAuthHeaders> {
+    if (this.manager === undefined) this.openNext()
+    if (this.manager === undefined) {
+      throw new Error('dsh-codebuddy-models: 未找到 CodeBuddy 登录凭据。请在桌面端登录 CodeBuddy / WorkBuddy。')
+    }
+    return this.manager.getHeaders()
+  }
+
+  /** A short human-readable summary of the current credential, for diagnostics. */
+  async summary(): Promise<Record<string, unknown>> {
+    if (this.manager === undefined) this.openNext()
+    return this.manager === undefined ? { error: 'no credential' } : this.manager.summary()
+  }
+
+  /**
+   * Discard the current (stale) login file and switch to the next candidate.
+   *
+   * Deletes the `.info` file so it is not re-picked on later scans, then
+   * re-opens the newest survivor. The next {@link getHeaders} therefore uses the
+   * remaining (presumably valid) account.
+   * @returns true when a different credential is now selected, false when none
+   *   remain (the file is still deleted in that case).
+   */
+  async invalidateCurrent(): Promise<boolean> {
+    const stale = this.manager?.file
+    if (stale !== undefined) {
+      try {
+        await fs.unlink(stale)
+      } catch (error) {
+        // Deletion is best-effort; even if the file cannot be removed, fall
+        // through to the next candidate by opening it directly.
+        void error
+      }
+    }
+    const before = stale
+    this.openNext()
+    const after = this.manager?.file
+    return after !== undefined && after !== before
+  }
 }

@@ -124,6 +124,15 @@ export interface CodeBuddyAdapterOptions {
   /** Resolve the authenticated backend headers (token + account identity). */
   resolveHeaders: () => Promise<CodeBuddyAuthHeaders>
   /**
+   * Invoked by the adapter when the backend rejects a request with 401/403:
+   * the current credential is stale (e.g. a superseded login file among several
+   * accounts). The plugin discards that credential and, on the next
+   * `resolveHeaders`, falls through to the remaining candidate auth files.
+   * Returns true when a different credential is now in play (so the caller can
+   * retry), false when none remain.
+   */
+  invalidateCredential?: () => Promise<boolean>
+  /**
    * Resolve the official CodeBuddy client model catalog (scanned from the
    * local `product.json`), or `undefined` when no official client is
    * installed or the manifest cannot be read. The adapter prefers this
@@ -458,28 +467,45 @@ export class CodeBuddyAdapter extends LlmAdapter {
 
   async *streamWithConnection(options: GenerateOptions): AsyncGenerator<StreamChunk> {
     const connection = this.config.options()
-    const headers = await this.config.resolveHeaders()
     const url = `${connection.baseURL}/v2/chat/completions`
     const body = JSON.stringify(serializeRequest(options))
 
-    const requestHeaders: Record<string, string> = {
-      ...headers,
-      ...attributionHeaders(CODEBUDDY_APP_IDENTITY),
-    }
-
-    let response: Response
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: requestHeaders,
-        body,
-        signal: options.signal,
-      })
-    } catch (error) {
-      if (options.signal?.aborted) {
-        throw new LlmError('CodeBuddy request aborted by caller', 'ABORTED', { cause: error as Error })
+    // Attempt the request up to twice: once with the current credential, and —
+    // when the backend answers 401/403 (a stale login among several accounts) —
+    // once more after discarding that credential and switching to the next
+    // candidate auth file.
+    let headers = await this.config.resolveHeaders()
+    let response!: Response
+    for (let attempt = 0; ; attempt++) {
+      const requestHeaders: Record<string, string> = {
+        ...headers,
+        ...attributionHeaders(CODEBUDDY_APP_IDENTITY),
       }
-      throw new LlmError(`CodeBuddy API request to ${url} failed`, 'TRANSPORT', { cause: error as Error })
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: requestHeaders,
+          body,
+          signal: options.signal,
+        })
+      } catch (error) {
+        if (options.signal?.aborted) {
+          throw new LlmError('CodeBuddy request aborted by caller', 'ABORTED', { cause: error as Error })
+        }
+        throw new LlmError(`CodeBuddy API request to ${url} failed`, 'TRANSPORT', { cause: error as Error })
+      }
+
+      // On a 401/403, discard the stale credential and retry once with the next
+      // candidate (if any). A retried auth failure then falls through to the
+      // normal error mapping below.
+      if ((response.status === 401 || response.status === 403) && attempt === 0) {
+        const switched = await this.config.invalidateCredential?.().catch(() => false)
+        if (switched === true) {
+          headers = await this.config.resolveHeaders()
+          continue
+        }
+      }
+      break
     }
 
     if (!response.ok) {

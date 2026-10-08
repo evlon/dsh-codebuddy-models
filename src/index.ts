@@ -23,7 +23,7 @@ import { LlmError, RetryPolicySchema, resolveRetryPolicy } from '@deepseek-ai/ds
 
 import { CodeBuddyAdapter, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DEFAULT_STREAM_IDLE_TIMEOUT_MS, DEFAULT_MODELS } from './adapter.js'
 import type { CodeBuddyCatalogModel } from './adapter.js'
-import { CredentialManager, findAuthFile } from './credentials.js'
+import { CredentialResolver, findAuthFile } from './credentials.js'
 import { OfficialCatalogReader } from './product-catalog.js'
 
 export * from './adapter.js'
@@ -206,23 +206,35 @@ export function apply(ctx: Context, config: Config): void {
         '请在 CodeBuddy / WorkBuddy 桌面端完成登录。',
     )
   }
-  let manager: CredentialManager | undefined = authFile === undefined ? undefined : new CredentialManager(authFile)
+  const credentials = new CredentialResolver()
   let catalog: OfficialCatalogReader | undefined
 
   const adapter = new CodeBuddyAdapter({
     options,
     resolveHeaders: async () => {
-      if (manager === undefined) {
-        const file = findAuthFile()
-        if (file === undefined) {
-          throw new LlmError(
-            'dsh-codebuddy-models: 未找到 CodeBuddy 登录凭据。请在桌面端登录 CodeBuddy / WorkBuddy。',
-            'MISSING_CREDENTIAL',
-          )
-        }
-        manager = new CredentialManager(file)
+      try {
+        return await credentials.getHeaders()
+      } catch (error) {
+        // Map a missing login file to the harness canonical credential error.
+        throw new LlmError(
+          'dsh-codebuddy-models: 未找到 CodeBuddy 登录凭据。请在桌面端登录 CodeBuddy / WorkBuddy。',
+          'MISSING_CREDENTIAL',
+          { cause: error as Error },
+        )
       }
-      return manager.getHeaders()
+    },
+    invalidateCredential: async () => {
+      const switched = await credentials.invalidateCurrent()
+      if (switched) {
+        ctx.logger.warn(
+          '[dsh-codebuddy-models] 检测到失效的 CodeBuddy 登录文件（已删除），切换到下一个账号。',
+        )
+      } else {
+        ctx.logger.warn(
+          '[dsh-codebuddy-models] 检测到失效的 CodeBuddy 登录文件，已删除；没有其它可用登录。',
+        )
+      }
+      return switched
     },
     resolveCatalog: async () => {
       if (catalog === undefined) catalog = new OfficialCatalogReader()
